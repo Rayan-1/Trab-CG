@@ -35,7 +35,11 @@ def redimensiona(tela_largura, tela_altura):
     glViewport(0, 0, tela_largura, tela_altura)
     glMatrixMode(GL_PROJECTION)
     glLoadIdentity()
-    gluPerspective(45, (tela_largura / tela_altura), 0.1, 50.0)
+    gluPerspective(45, (tela_largura / tela_altura), 0.1, 100.0)  # FOV e plano de corte ajustados
     glMatrixMode(GL_MODELVIEW)
     glLoadIdentity()
-    glTranslatef(0.0, 0.0, -10)  # Posiciona a câmera para ver a pista
+    
+    # Configura a câmera para uma visão em 3D
+    gluLookAt(0, 5, 15,  # Posição da câmera (x, y, z)
+              0, 0, -10,  # Ponto para onde a câmera está olhando (centro da pista)
+              0, 1, 0)  # Vetor "up" (orientação da câmera) quando a moto andar a pista tbm deve seguir 

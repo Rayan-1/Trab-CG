@@ -1,16 +1,17 @@
 import pygame
-from pygame.locals import *
 from OpenGL.GL import *
 from OpenGL.GLU import *
-from pista import desenha_chao, redimensiona 
+from pygame.locals import *
+from pista import desenha_chao, redimensiona
+from moto import desenha_moto, mover_moto
 
 def inicio():
     glClearColor(0.53, 0.81, 0.98, 1)  # Cor do fundo (azul claro)
     glPointSize(10)
 
     # Ativa o antialiasing
-    glEnable(GL_MULTISAMPLE)  # Habilita o antialiasing com múltiplos samples
-    glHint(GL_POLYGON_SMOOTH_HINT, GL_NICEST)  # Melhora a qualidade do antialiasing
+    glEnable(GL_MULTISAMPLE)
+    glHint(GL_POLYGON_SMOOTH_HINT, GL_NICEST)
 
 def main():
     pygame.init()
@@ -22,23 +23,34 @@ def main():
     # Ajusta a projeção inicial
     redimensiona(display[0], display[1])
 
+    # Posição inicial da moto
+    posicao_moto = [0, -0.6, -8]  # x, y, z
+
     while True:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 pygame.quit()
                 return
-            
-            # Verifica o evento de redimensionamento da janela
             if event.type == VIDEORESIZE:
-                redimensiona(event.w, event.h)  # Atualiza a projeção com o novo tamanho da janela
+                redimensiona(event.w, event.h)
 
+        # Verifica as teclas pressionadas
+        keys = pygame.key.get_pressed()
         
+        # Mover a moto com base nas teclas pressionadas
+        mover_moto(keys, posicao_moto)
+
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
-        desenha_chao()
+        # Desenha a pista e a moto na posição atual
+        desenha_chao()  # Desenha a pista
+        glPushMatrix()
+        glTranslatef(posicao_moto[0], posicao_moto[1], posicao_moto[2])  # Move a moto para a posição atual
+        desenha_moto()  # Desenha a moto
+        glPopMatrix()
 
-        pygame.display.flip()  
-        pygame.time.wait(10)  
+        pygame.display.flip()
+        pygame.time.wait(10)
 
 if __name__ == "__main__":
     main()
