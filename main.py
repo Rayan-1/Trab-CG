@@ -2,10 +2,11 @@ import pygame
 from OpenGL.GL import *
 from OpenGL.GLU import *
 from pygame.locals import *
-from pista import desenha_chao, redimensiona
+from pista import desenha_chao, redimensiona, ajusta_camera, desenha_pista_continua
 from moto import desenha_moto, mover_moto
 
 def inicio():
+    """Configurações iniciais para a cena, incluindo cor de fundo e antialiasing."""
     glClearColor(0.53, 0.81, 0.98, 1)  # Cor do fundo (azul claro)
     glPointSize(10)
 
@@ -42,8 +43,13 @@ def main():
 
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
-        # Desenha a pista e a moto na posição atual
-        desenha_chao()  # Desenha a pista
+        # Desenha o chão contínuo
+        desenha_pista_continua(posicao_moto)
+
+        # Ajusta a câmera para acompanhar a moto
+        ajusta_camera(posicao_moto)
+
+        # Desenha a moto na posição atual
         glPushMatrix()
         glTranslatef(posicao_moto[0], posicao_moto[1], posicao_moto[2])  # Move a moto para a posição atual
         desenha_moto()  # Desenha a moto

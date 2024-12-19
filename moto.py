@@ -1,4 +1,5 @@
 import pygame
+from pygame.locals import *
 from OpenGL.GL import *
 from OpenGL.GLU import *
 
@@ -76,13 +77,16 @@ def desenha_moto():
     desenha_cubo(0.5, -0.4, -7.9, 0.3, 0.1, 0.1, (0, 0, 1))  # Guidão direito (azul)
     desenha_cubo(-0.5, -0.4, -7.9, 0.3, 0.1, 0.1, (0, 0, 1))  # Guidão esquerdo (azul)
     
-def mover_moto(keys, posicao):
+def mover_moto(teclas, posicao):
     """Move a moto com base nas teclas pressionadas."""
-    if keys[pygame.K_LEFT]:
-        posicao[0] -= 0.1
-    if keys[pygame.K_RIGHT]:
-        posicao[0] += 0.1
-    if keys[pygame.K_DOWN]:
-        posicao[2] += 0.1 
-    if keys[pygame.K_UP]:
-        posicao[2] -= 0.1
+    velocidade = 0.2  # Ajuste a velocidade de movimento conforme necessário
+
+    if teclas[K_LEFT]:
+        posicao[0] -= velocidade  # Move a moto para a esquerda
+    if teclas[K_RIGHT]:
+        posicao[0] += velocidade  # Move a moto para a direita
+
+    if teclas[K_UP]:
+        posicao[2] -= velocidade  # Move a moto para frente (diminuindo o valor de Z)
+    if teclas[K_DOWN]:
+        posicao[2] += velocidade  # Move a moto para trás (aumentando o valor de Z)
