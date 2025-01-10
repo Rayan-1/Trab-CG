@@ -4,6 +4,7 @@ from OpenGL.GLU import *
 from pygame.locals import *
 from pista import desenha_chao, redimensiona, ajusta_camera, desenha_pista_continua
 from moto import desenha_moto, mover_moto
+from obj import carregar_objeto, desenhar_objeto
 
 def inicio():
     """Configurações iniciais para a cena, incluindo cor de fundo e antialiasing."""
@@ -20,6 +21,10 @@ def main():
     pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
 
     inicio()
+
+    # Substitua 'seu_modelo.obj' pelo caminho para o arquivo OBJ
+    caminho_modelo = 'Motorcycle.obj'
+    vertices, faces = carregar_objeto(caminho_modelo)
 
     # Ajusta a projeção inicial
     redimensiona(display[0], display[1])
@@ -52,7 +57,9 @@ def main():
         # Desenha a moto na posição atual
         glPushMatrix()
         glTranslatef(posicao_moto[0], posicao_moto[1], posicao_moto[2])  # Move a moto para a posição atual
-        desenha_moto()  # Desenha a moto
+        glScalef(0.1, 0.1, 0.1)
+        # desenha_moto()  # Desenha a moto
+        desenhar_objeto(vertices, faces)  # Desenha o modelo
         glPopMatrix()
 
         pygame.display.flip()
