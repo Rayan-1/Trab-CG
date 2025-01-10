@@ -3,7 +3,7 @@ from OpenGL.GL import *
 from OpenGL.GLU import *
 from pygame.locals import *
 from pista import desenha_chao, redimensiona, ajusta_camera, desenha_pista_continua
-from moto import desenha_moto, mover_moto
+from moto import mover_moto
 from obj import carregar_objeto, desenhar_objeto
 
 def inicio():
