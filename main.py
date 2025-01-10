@@ -57,7 +57,7 @@ def main():
         # Desenha a moto na posição atual
         glPushMatrix()
         glTranslatef(posicao_moto[0], posicao_moto[1], posicao_moto[2])  # Move a moto para a posição atual
-        glScalef(0.1, 0.1, 0.1)
+        glScalef(0.15, 0.15, 0.15)
         # desenha_moto()  # Desenha a moto
         desenhar_objeto(vertices, faces)  # Desenha o modelo
         glPopMatrix()

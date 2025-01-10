@@ -50,4 +50,3 @@ def ajusta_camera(posicao_moto):
     gluLookAt(posicao_moto[0]-0.8, posicao_moto[1] + 0.5, posicao_moto[2] + 2,  # Posição da câmera
               posicao_moto[0], posicao_moto[1], posicao_moto[2],  # Para onde a câmera está olhando
               0, 1, 0)  # Vetor 'up' da câmera
-    print()
