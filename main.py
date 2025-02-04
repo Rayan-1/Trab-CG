@@ -5,6 +5,7 @@ from pygame.locals import *
 from pista import desenha_chao, redimensiona, ajusta_camera, desenha_pista_continua
 from moto import mover_moto
 from obj import carregar_objeto, desenhar_objeto
+from iluminacao import configurar_iluminacao
 
 def inicio():
     """Configurações iniciais para a cena, incluindo cor de fundo e antialiasing."""
@@ -25,6 +26,8 @@ def main():
     # Substitua 'seu_modelo.obj' pelo caminho para o arquivo OBJ
     caminho_modelo = 'Motorcycle.obj'
     vertices, faces = carregar_objeto(caminho_modelo)
+    
+    luz_pos = [0, 10, 5, 1.0]
 
     # Ajusta a projeção inicial
     redimensiona(display[0], display[1])
@@ -53,6 +56,9 @@ def main():
 
         # Ajusta a câmera para acompanhar a moto
         ajusta_camera(posicao_moto)
+        
+        configurar_iluminacao()
+        
 
         # Desenha a moto na posição atual
         glPushMatrix()
