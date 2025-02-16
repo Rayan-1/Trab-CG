@@ -7,12 +7,13 @@ def carregar_texturas_skybox():
     """
     Carrega as texturas do skybox.
     """
-    config.textura_frente   = utils.carregar_textura("assets/skybox/front.tga")
-    config.textura_tras     = utils.carregar_textura("assets/skybox/back.tga")
-    config.textura_direita  = utils.carregar_textura("assets/skybox/right.tga")
-    config.textura_esquerda = utils.carregar_textura("assets/skybox/left.tga")
-    config.textura_cima     = utils.carregar_textura("assets/skybox/up.tga")
-    config.textura_baixo    = utils.carregar_textura("assets/skybox/bottom.tga")
+    config.textura_frente   = utils.carregar_textura("assets/skybox/front.tga", True)
+    config.textura_tras     = utils.carregar_textura("assets/skybox/back.tga", True)
+    config.textura_direita  = utils.carregar_textura("assets/skybox/right.tga", True)
+    config.textura_esquerda = utils.carregar_textura("assets/skybox/left.tga", True)
+    config.textura_cima     = utils.carregar_textura("assets/skybox/up.tga", True)
+    config.textura_baixo    = utils.carregar_textura("assets/skybox/bottom.tga", True)
+    
 
 def desenhar_skybox():
     """

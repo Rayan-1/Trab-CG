@@ -2,7 +2,7 @@ from OpenGL.GL import *
 from PIL import Image
 import math
 
-def carregar_textura(caminho_imagem: str) -> int:
+def carregar_textura(caminho_imagem: str, skybox: bool = False) -> int:
     """
     Carrega uma imagem e cria uma textura OpenGL.
     Se a extensão for .tga, utiliza RGBA; caso contrário, utiliza RGB.
@@ -30,6 +30,9 @@ def carregar_textura(caminho_imagem: str) -> int:
     glTexImage2D(GL_TEXTURE_2D, 0, modo, largura, altura, 0, modo, GL_UNSIGNED_BYTE, dados_imagem)
     glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
     glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+    if skybox:
+        glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+        glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
     return id_textura
 
 def configurar_opengl():

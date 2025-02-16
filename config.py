@@ -77,3 +77,7 @@ pos_camera = [0.0, 0.0, 0.0]
 
 # Deslocamento vertical para as rampas (para evitar recortes visuais)
 deslocamento_rampa = 1.0
+
+# Variáveis para os locais personalizados definidos na tela inicial:
+lista_posicoes_personalizadas_obstaculos = []  # Cada item será uma tupla (x, z)
+lista_posicoes_personalizadas_rampas = []       # Cada item será uma tupla (x, z)

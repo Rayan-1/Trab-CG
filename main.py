@@ -1,17 +1,19 @@
+# main.py (apenas a parte relevante)
 import glfw
 from OpenGL.GL import *
 from OpenGL.GLU import *
 import math
-
+import tela_inicial
 import config
 import utils
 import pista
 import skybox
 import obstaculos
 import controller
+import camera  
 
 def main():
-    # Inicializa o GLFW
+    # Inicializa o GLFW e configura o OpenGL
     if not glfw.init():
         return
     janela = glfw.create_window(1200, 800, "Moto Titan 150 ", None, None)
@@ -19,39 +21,38 @@ def main():
         glfw.terminate()
         return
     glfw.make_context_current(janela)
+    lista_obstaculos, lista_rampas,lista_objetos_final = tela_inicial.tela_inicial(janela)
+    
     glEnable(GL_DEPTH_TEST)
-    
-    # Configura os estados do OpenGL
     utils.configurar_opengl()
-    
     # Carrega as texturas
     skybox.carregar_texturas_skybox()
     pista.carregar_texturas_chao()
     pista.carregar_textura_pista()
-    # Para obstáculos e rampas, utilizamos imagens de exemplo
     config.textura_obstaculo = utils.carregar_textura("assets/obstaculo03.jpg")
     config.textura_rampa = utils.carregar_textura("assets/obstaculo.jpg")
+    
     
     # Gera os pontos centrais da pista
     pista.gerar_pontos_pista(config.NUM_PONTOS_PISTA)
     
-    # Gera obstáculos e rampas
-    lista_obstaculos = obstaculos.gerar_obstaculos()
-    lista_rampas = obstaculos.gerar_rampas()
+    moto = controller.Motorcycle(modelo_path="bike/moto_crfv2.obj", escala=0.5)
+    # moto = controller.Motorcycle(modelo_path="assets/moto_piloto_240.obj", escala=0.5)
     
     # Cria a instância da moto e posiciona-a no início da pista
-    moto = controller.Motorcycle(modelo_path="assets/motorcycle.obj", escala=0.5)
     if config.pontos_centro_pista:
         moto.pos[0] = config.pontos_centro_pista[0][0]
         moto.pos[2] = config.pontos_centro_pista[0][1]
     
-    # Define a direção inicial da moto com base na tangente da pista
     if len(config.pontos_centro_pista) > 1:
         pt_proximo = config.pontos_centro_pista[1]
         pt_anterior = config.pontos_centro_pista[-2]
-        tangente_x = pt_proximo[0] - pt_anterior[0]
-        tangente_z = pt_proximo[1] - pt_anterior[1]
-        moto.direcao = math.atan2(tangente_x, tangente_z)
+        moto.direcao = math.atan2(pt_proximo[0] - pt_anterior[0], pt_proximo[1] - pt_anterior[1])
+    
+    # Cria o controlador de câmera
+    controlador_camera = camera.ControladorCamera()
+    # Inicializa os offsets conforme o modo atual
+    controlador_camera.offset_atual, controlador_camera.alvo_offset_atual = controlador_camera.calcular_offsets(moto)
     
     tempo_anterior = glfw.get_time()
     
@@ -63,30 +64,21 @@ def main():
         largura, altura = glfw.get_framebuffer_size(janela)
         glViewport(0, 0, largura, altura)
         
-        # Atualiza o estado da moto
+        # Atualiza a moto
         moto.update(janela, dt, lista_obstaculos, lista_rampas)
         
-        # Calcula a posição da câmera relativa à moto
-        offset_cam_x = -config.distancia_camera * math.sin(moto.direcao)
-        offset_cam_z = -config.distancia_camera * math.cos(moto.direcao)
-        cam_x = moto.pos[0] + offset_cam_x
-        cam_y = moto.pos[1] + config.altura_camera
-        cam_z = moto.pos[2] + offset_cam_z
-        config.pos_camera[:] = [cam_x, cam_y, cam_z]
+        # Atualiza o controlador da câmera (incluindo a troca de modo com TAB)
+        controlador_camera.atualizar(janela, dt, moto)
         
-        # Configura as matrizes de projeção e visão
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         glMatrixMode(GL_PROJECTION)
         glLoadIdentity()
         aspecto = largura / altura if altura != 0 else 1
         gluPerspective(45, aspecto, 1, 200)
-        glMatrixMode(GL_MODELVIEW)
-        glLoadIdentity()
-        gluLookAt(cam_x, cam_y, cam_z,
-                  moto.pos[0], moto.pos[1], moto.pos[2],
-                  0, 1, 0)
         
-        # Desenha os elementos da cena
+        glMatrixMode(GL_MODELVIEW)
+        controlador_camera.aplicar_visualizacao()
+        
         skybox.desenhar_skybox()
         pista.desenhar_chao()
         pista.desenhar_pista()

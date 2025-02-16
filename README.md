@@ -9,3 +9,5 @@ dia 01/12
 dia 18/12
 ![alt text](image-2.png)
 ![alt text](image-3.png)
+
+<!-- PS C:\Users\erikb\OneDrive\Documentos\Alura\Trab-CG> .\venv\Scripts\activate -->

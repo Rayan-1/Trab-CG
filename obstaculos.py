@@ -156,8 +156,8 @@ def gerar_rampas():
         rampas.append({
             'x': cx,
             'z': cz,
-            'profundidade': 10.0,
-            'altura_maxima': 4.0,
+            'profundidade': 20.0,
+            'altura_maxima': 3.5,
             'orientacao': theta + variacao
         })
     return rampas
