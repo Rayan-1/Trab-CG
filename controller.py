@@ -340,20 +340,24 @@ class Motorcycle:
             self.pos.x = pos_anterior.x
             self.pos.z = pos_anterior.z
             self.velocidade = 0
-            
-        # Verifica colisão com pedras (obstáculos que a moto pode pular ou ficar sobre)
+
+        # Verifica se há colisão com um objeto pedra, utilizando a função específica
         colisao_objeto = obstaculos.verificar_colisao_pedra(list(self.pos), config.tamanho_moto, lista_objetos_pedra)
         if colisao_objeto is not None:
-            # Calcula a altura do obstáculo (pedra), considerando que ela repousa no chão
-            altura_obstaculo = config.nível_chão + colisao_objeto['tamanho']
-            # Base da moto: posição y menos metade do tamanho da moto
-            base_moto = self.pos.y - (config.tamanho_moto / 2)
-            # Se a base da moto estiver abaixo do topo da pedra, há colisão
-            # Assim, a moto pode pular por cima ou permanecer em cima da pedra se estiver alta o bastante
-            if base_moto < altura_obstaculo:
-                self.pos.x = pos_anterior.x
-                self.pos.z = pos_anterior.z
-                self.velocidade = 0
+            meio = config.tamanho_moto / 2  # Metade do tamanho da moto (usado para o bounding box)
+            # Calcula a altura do objeto pedra, assumindo que ele repousa no chão
+            altura_pedra = config.nível_chão + colisao_objeto['tamanho']
+            # Se a base da moto (pos.y - meio) estiver abaixo do topo da pedra, há penetração
+            if self.pos.y - meio < altura_pedra:
+                # Se a moto estiver em queda (velocidade vertical negativa), ajusta a posição vertical para "pisar" na pedra
+                if self.velocidade_vertical < 0:
+                    self.pos.y = altura_pedra + meio
+                    self.velocidade_vertical = 0.0
+                else:
+                    # Caso contrário, reverte a posição horizontal para evitar que a moto entre na pedra
+                    self.pos.x = pos_anterior.x
+                    self.pos.z = pos_anterior.z
+                    self.velocidade = 0
 
         # Física vertical: aplica gravidade se a moto estiver no ar ou pulando
         if self.pos.y > (config.nível_pista + config.tamanho_moto / 2) or self.velocidade_vertical != 0.0:
