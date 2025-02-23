@@ -1,11 +1,22 @@
+# utils.py
+"""
+Módulo utilitário para funções comuns, como:
+  - Carregamento de texturas (usando Pillow);
+  - Configuração inicial do OpenGL (iluminação, texturas, etc.);
+  - Função de interpolação (Catmull-Rom) para gerar curvas suaves.
+"""
+
 from OpenGL.GL import *
 from PIL import Image
-import math
 
 def carregar_textura(caminho_imagem: str, skybox: bool = False) -> int:
     """
     Carrega uma imagem e cria uma textura OpenGL.
-    Se a extensão for .tga, utiliza RGBA; caso contrário, utiliza RGB.
+    
+    Se a extensão for .tga, utiliza o modo RGBA; caso contrário, utiliza RGB.
+    skybox: se True, configura o wrap mode para CLAMP_TO_EDGE (necessário para skybox).
+    
+    Retorna o identificador da textura ou 0 em caso de erro.
     """
     try:
         imagem = Image.open(caminho_imagem)
@@ -37,29 +48,52 @@ def carregar_textura(caminho_imagem: str, skybox: bool = False) -> int:
 
 def configurar_opengl():
     """
-    Configura os estados iniciais do OpenGL, incluindo teste de profundidade,
-    texturas e iluminação Phong.
+    Configura os estados iniciais do OpenGL:
+      - Ativa teste de profundidade e texturização.
+      - Configura o sistema de iluminação: luz principal (simulando sol poente)
+        e luz de preenchimento para evitar sombras excessivas.
+      - Define o ambiente de textura para modulação com a iluminação.
     """
     glEnable(GL_DEPTH_TEST)
     glEnable(GL_TEXTURE_2D)
-    # Configuração da iluminação Phong (pipeline fixo)
+    
     glEnable(GL_LIGHTING)
-    glEnable(GL_LIGHT0)
     glShadeModel(GL_SMOOTH)
-    luz_ambiente = [0.2, 0.2, 0.2, 1.0]
-    luz_diffusa  = [0.8, 0.8, 0.8, 1.0]
-    luz_especular= [1.0, 1.0, 1.0, 1.0]
-    posicao_luz  = [0.0, 50.0, 0.0, 1.0]
-    glLightfv(GL_LIGHT0, GL_AMBIENT, luz_ambiente)
-    glLightfv(GL_LIGHT0, GL_DIFFUSE, luz_diffusa)
-    glLightfv(GL_LIGHT0, GL_SPECULAR, luz_especular)
-    glLightfv(GL_LIGHT0, GL_POSITION, posicao_luz)
-    # Modulação de textura com iluminação
+
+    # Configuração da Luz Principal (GL_LIGHT0)
+    glEnable(GL_LIGHT0)
+    cor_ambiente_principal = [0.3, 0.2, 0.1, 1.0]
+    cor_diffusa_principal = [1.0, 0.6, 0.2, 1.0]
+    cor_especular_principal = [1.0, 0.6, 0.2, 1.0]
+    posicao_luz_principal = [-50.0, 50.0, 0.0, 0.0]  # luz direcional (w = 0)
+    glLightfv(GL_LIGHT0, GL_AMBIENT, cor_ambiente_principal)
+    glLightfv(GL_LIGHT0, GL_DIFFUSE, cor_diffusa_principal)
+    glLightfv(GL_LIGHT0, GL_SPECULAR, cor_especular_principal)
+    glLightfv(GL_LIGHT0, GL_POSITION, posicao_luz_principal)
+
+    # Configuração da Luz de Preenchimento (GL_LIGHT1)
+    glEnable(GL_LIGHT1)
+    cor_ambiente_preenchimento = [0.4, 0.3, 0.2, 1.0]
+    cor_diffusa_preenchimento = [0.6, 0.4, 0.3, 1.0]
+    cor_especular_preenchimento = [0.6, 0.4, 0.3, 1.0]
+    posicao_luz_preenchimento = [50.0, 30.0, 0.0, 0.0]
+    glLightfv(GL_LIGHT1, GL_AMBIENT, cor_ambiente_preenchimento)
+    glLightfv(GL_LIGHT1, GL_DIFFUSE, cor_diffusa_preenchimento)
+    glLightfv(GL_LIGHT1, GL_SPECULAR, cor_especular_preenchimento)
+    glLightfv(GL_LIGHT1, GL_POSITION, posicao_luz_preenchimento)
+
+    # Luz Ambiente Global
+    glLightModelfv(GL_LIGHT_MODEL_AMBIENT, [0.2, 0.2, 0.2, 1.0])
     glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE)
 
 def interpolacao_catmull_rom(p0, p1, p2, p3, t):
     """
-    Realiza a interpolação Catmull-Rom 2D e retorna um ponto (x, z).
+    Realiza a interpolação Catmull-Rom para gerar um ponto na curva.
+    
+    p0, p1, p2, p3: pontos de controle (cada um uma tupla com duas coordenadas).
+    t: parâmetro de interpolação, variando de 0 a 1.
+    
+    Retorna uma tupla (x, z) representando o ponto interpolado.
     """
     t2 = t * t
     t3 = t2 * t

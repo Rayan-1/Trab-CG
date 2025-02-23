@@ -1,0 +1,1615 @@
+# main.py 
+import glfw
+from OpenGL.GL import *
+from OpenGL.GLU import *
+import math
+import tela_inicial
+import config
+import utils
+import pista
+import skybox
+import obstaculos
+import controller
+import camera  
+
+def main():
+    # Inicializa o GLFW e configura o OpenGL 
+    if not glfw.init():
+        return
+    janela = glfw.create_window(1200, 800, "Moto Titan 150 ", None, None)
+    if not janela:
+        glfw.terminate()
+        return
+    glfw.make_context_current(janela)
+    lista_obstaculos, lista_rampas, lista_objetos_pedra = tela_inicial.tela_inicial(janela)
+    
+    glEnable(GL_DEPTH_TEST)
+    utils.configurar_opengl()
+    skybox.carregar_texturas_skybox()
+    pista.carregar_texturas_chao()
+    pista.carregar_textura_pista()
+    config.textura_obstaculo = utils.carregar_textura("assets/obstaculo03.jpg")
+    config.textura_rampa = utils.carregar_textura("assets/obstaculo.jpg")
+    
+    
+    # Gera os pontos centrais da pista
+    pista.gerar_pontos_pista(config.NUM_PONTOS_PISTA)
+    
+    # moto = controller.Motorcycle(modelo_path="assets/moto_piloto_240.obj", escala=0.5)
+    modelo_objeto_pedra = controller.carregar_objeto("assets/pedra/roc.obj")
+    moto = controller.Motorcycle(modelo_path="bike/moto_crfv2.obj", escala=0.5)
+    
+    # Cria a instância da moto e posiciona-a no início da pista
+    if config.pontos_centro_pista:
+        moto.pos[0] = config.pontos_centro_pista[0][0]
+        moto.pos[2] = config.pontos_centro_pista[0][1]
+    
+    if len(config.pontos_centro_pista) > 1:
+        pt_proximo = config.pontos_centro_pista[1]
+        pt_anterior = config.pontos_centro_pista[-2]
+        moto.direcao = math.atan2(pt_proximo[0] - pt_anterior[0], pt_proximo[1] - pt_anterior[1])
+    
+    # Cria o controlador de câmera
+    controlador_camera = camera.ControladorCamera()
+    # Inicializa os offsets conforme o modo atual
+    controlador_camera.offset_atual, controlador_camera.alvo_offset_atual = controlador_camera.calcular_offsets(moto)
+    tempo_anterior = glfw.get_time()
+    
+    while not glfw.window_should_close(janela):
+        tempo_atual = glfw.get_time()
+        dt = tempo_atual - tempo_anterior
+        tempo_anterior = tempo_atual
+        
+        largura, altura = glfw.get_framebuffer_size(janela)
+        glViewport(0, 0, largura, altura)
+        
+        # Atualiza a moto
+        moto.update(janela, dt, lista_obstaculos, lista_rampas, lista_objetos_pedra)
+        
+        # Atualiza o controlador da câmera (incluindo a troca de modo com TAB)
+        controlador_camera.atualizar(janela, dt, moto)
+        
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+        glMatrixMode(GL_PROJECTION)
+        glLoadIdentity()
+        aspecto = largura / altura if altura != 0 else 1
+        gluPerspective(45, aspecto, 1, 200)
+        
+        glMatrixMode(GL_MODELVIEW)
+        controlador_camera.aplicar_visualizacao()
+        
+        skybox.desenhar_skybox()
+        pista.desenhar_chao()
+        pista.desenhar_pista()
+        for obs in lista_obstaculos:
+            obstaculos.desenhar_obstaculo(obs)
+        for rampa in lista_rampas:
+            obstaculos.desenhar_rampa(rampa)
+        for objeto in lista_objetos_pedra:
+            obstaculos.desenhar_lista_objetos_pedra(modelo_objeto_pedra, objeto)
+            
+        moto.draw()
+        
+        glfw.swap_buffers(janela)
+        glfw.poll_events()
+    
+    glfw.terminate()
+
+if __name__ == "__main__":
+    main()
+
+
+
+# controller.py
+
+from OpenGL.GL import *
+import math
+import glfw
+import os
+import utils
+import config
+import glm  # Importação do PyGLM para operações vetoriais
+import obstaculos
+
+def carregar_mtl(caminho_mtl: str) -> dict:
+    """
+    Carrega um arquivo .mtl e retorna um dicionário com os materiais.
+    Cada material é um dicionário com chaves: 'Ka', 'Kd', 'Ks', 'Ns', 'd', 'map_Kd' (se disponíveis).
+    """
+    materiais = {}
+    try:
+        with open(caminho_mtl, 'r') as arquivo:
+            material_atual = None
+            for linha in arquivo:
+                linha = linha.strip()
+                if not linha or linha.startswith('#'):
+                    continue
+                partes = linha.split()
+                chave = partes[0]
+                if chave == 'newmtl':
+                    material_atual = partes[1]
+                    materiais[material_atual] = {}
+                elif chave in ['Ka', 'Kd', 'Ks']:
+                    # Configura Ambient, Diffuse e Specular (acrescenta alfa = 1.0)
+                    materiais[material_atual][chave] = list(map(float, partes[1:4])) + [1.0]
+                elif chave == 'Ns':
+                    materiais[material_atual]['Ns'] = float(partes[1])
+                elif chave == 'd':
+                    materiais[material_atual]['d'] = float(partes[1])
+                elif chave == 'Tr':
+                    # 'Tr' representa transparência; usamos 1 - valor para obter opacidade
+                    materiais[material_atual]['d'] = 1.0 - float(partes[1])
+                elif chave == 'map_Kd':
+                    # Define o mapa difuso (textura)
+                    materiais[material_atual]['map_Kd'] = partes[1]
+    except Exception as e:
+        print(f"Erro ao carregar MTL '{caminho_mtl}': {e}")
+    return materiais
+
+def carregar_objeto(caminho_obj: str) -> dict:
+    """
+    Carrega um arquivo .obj e, se disponível, o respectivo .mtl, retornando um dicionário com:
+      - vértices, normais e coordenadas de textura;
+      - faces (associadas ao material);
+      - e uma display list compilada para otimização do desenho.
+    """
+    vertices = []
+    normais = []
+    texcoords = []
+    faces = []
+    materiais = {}
+    material_atual = None
+
+    diretorio_obj = os.path.dirname(caminho_obj)
+
+    try:
+        with open(caminho_obj, 'r') as arquivo:
+            for linha in arquivo:
+                if linha.startswith('#'):
+                    continue
+                partes = linha.strip().split()
+                if not partes:
+                    continue
+                chave = partes[0]
+                if chave == 'v':
+                    vertices.append(list(map(float, partes[1:])))
+                elif chave == 'vn':
+                    normais.append(list(map(float, partes[1:])))
+                elif chave == 'vt':
+                    texcoords.append(list(map(float, partes[1:])))
+                elif chave == 'f':
+                    face = []
+                    for parte in partes[1:]:
+                        # Pode vir no formato v/vt/vn ou v//vn ou v/vt
+                        indices = parte.split('/')
+                        vi = int(indices[0]) - 1 if indices[0] else None
+                        ti = int(indices[1]) - 1 if len(indices) > 1 and indices[1] != '' else None
+                        ni = int(indices[2]) - 1 if len(indices) > 2 and indices[2] != '' else None
+                        face.append((vi, ti, ni))
+                    faces.append((face, material_atual))
+                elif chave == 'mtllib':
+                    nome_mtl = partes[1]
+                    caminho_mtl = os.path.join(diretorio_obj, nome_mtl)
+                    materiais = carregar_mtl(caminho_mtl)
+                elif chave == 'usemtl':
+                    material_atual = partes[1]
+    except Exception as e:
+        print(f"Erro ao carregar o objeto '{caminho_obj}': {e}")
+
+    # Compila a display list para otimização
+    lista = glGenLists(1)
+    glNewList(lista, GL_COMPILE)
+    material_corrente = None
+    texturas_material = {}
+    for face, mat in faces:
+        # Se o material mudar, atualiza os parâmetros de material
+        if mat != material_corrente:
+            material_corrente = mat
+            if material_corrente in materiais:
+                props = materiais[material_corrente]
+                if 'Ka' in props:
+                    glMaterialfv(GL_FRONT, GL_AMBIENT, props['Ka'])
+                if 'Kd' in props:
+                    glMaterialfv(GL_FRONT, GL_DIFFUSE, props['Kd'])
+                if 'Ks' in props:
+                    glMaterialfv(GL_FRONT, GL_SPECULAR, props['Ks'])
+                if 'Ns' in props:
+                    glMaterialf(GL_FRONT, GL_SHININESS, props['Ns'])
+                if 'map_Kd' in props:
+                    if material_corrente not in texturas_material:
+                        caminho_textura = os.path.join(diretorio_obj, props['map_Kd'])
+                        tex_id = utils.carregar_textura(caminho_textura)
+                        texturas_material[material_corrente] = tex_id
+                    glBindTexture(GL_TEXTURE_2D, texturas_material[material_corrente])
+                else:
+                    glBindTexture(GL_TEXTURE_2D, 0)
+            else:
+                # glColor3f(1, 1, 1)
+                glBindTexture(GL_TEXTURE_2D, 0)
+        # Desenha a face com triangulação (método fan)
+        if len(face) < 3:
+            continue
+        v0 = face[0]
+        for i in range(1, len(face) - 1):
+            glBegin(GL_TRIANGLES)
+            for v in (v0, face[i], face[i+1]):
+                vi, ti, ni = v
+                if ni is not None and ni < len(normais):
+                    glNormal3fv(normais[ni])
+                if ti is not None and ti < len(texcoords):
+                    glTexCoord2fv(texcoords[ti])
+                glVertex3fv(vertices[vi])
+            glEnd()
+    glEndList()
+
+    return {
+        'vertices': vertices,
+        'normais': normais,
+        'texcoords': texcoords,
+        'faces': faces,
+        'materiais': materiais,
+        'lista': lista
+    }
+
+def desenhar_objeto_carregado(obj: dict):
+    """
+    Desenha o objeto carregado utilizando a display list compilada.
+    Se a display list não estiver disponível, utiliza o método tradicional (menos performático).
+    """
+    if 'lista' in obj and obj['lista'] != 0:
+        glCallList(obj['lista'])
+    else:
+        for face, _ in obj['faces']:
+            if len(face) < 3:
+                continue
+            v0 = face[0]
+            for i in range(1, len(face) - 1):
+                glBegin(GL_TRIANGLES)
+                for v in (v0, face[i], face[i+1]):
+                    vi, ti, ni = v
+                    if ni is not None and ni < len(obj['normais']):
+                        glNormal3fv(obj['normais'][ni])
+                    if ti is not None and ti < len(obj['texcoords']):
+                        glTexCoord2fv(obj['texcoords'][ti])
+                    glVertex3fv(obj['vertices'][vi])
+                glEnd()
+
+def desenhar_moto_model(objeto_moto, posicao: glm.vec3, direcao, angulo_inclinacao, escala):
+    """
+    Desenha o modelo da moto aplicando translação, rotação e escala.
+    Uma rotação adicional de 180° no eixo Y é aplicada para corrigir a orientação.
+    
+    Parâmetros:
+      objeto_moto: objeto carregado contendo a display list.
+      posicao (glm.vec3): Posição da moto.
+      direcao: Ângulo de direção (em radianos).
+      angulo_inclinacao: Ângulo de inclinação (banking) em graus.
+      escala: Fator de escala do modelo.
+      
+    Essa função utiliza as operações matriciais do OpenGL para posicionar e orientar o modelo.
+    """
+
+    # Define uma cor mais escura (por exemplo, 0.6, 0.6, 0.6) para reduzir a luminosidade
+    glColor3f(0.6, 0.6, 0.6)
+    # Configura os materiais com valores mais escuros para ambiente e difuso
+    material_ambient = [0.3, 0.3, 0.3, 1.0]   # Ambiente mais escuro
+    material_diffuse = [0.2, 0.2, 0.2, 1.0]   # Difuso também reduzido
+    glMaterialfv(GL_FRONT, GL_AMBIENT, material_ambient)
+    glMaterialfv(GL_FRONT, GL_DIFFUSE, material_diffuse)
+
+    glPushMatrix()
+    glTranslatef(posicao.x, posicao.y - 0.5, posicao.z)
+    glRotatef(math.degrees(direcao), 0, 1, 0)
+    glRotatef(180, 0, 1, 0)
+    glRotatef(angulo_inclinacao, 0, 0, 1)
+    glScalef(escala, escala, escala)
+    desenhar_objeto_carregado(objeto_moto)
+    glPopMatrix()
+
+class Motorcycle:
+    """
+    Classe que representa a moto.
+    Gerencia o estado (posição, velocidade, direção, etc.), processa a entrada,
+    atualiza a física e realiza o desenho do modelo.
+    
+    Nesta refatoração, a posição é armazenada como um objeto glm.vec3, permitindo
+    manipulações vetoriais diretas e código mais limpo.
+    """
+    def __init__(self, modelo_path="motorcycle.obj", escala=0.5):
+        # A posição é definida como um glm.vec3
+        self.pos = glm.vec3(0.0, config.nível_pista + (config.tamanho_moto / 2), 0.0)
+        self.velocidade = config.velocidade_moto_inicial
+        self.direcao = config.direcao_moto_inicial
+        self.velocidade_vertical = config.velocidade_vertical_inicial
+        self.angulo_inclinacao = config.angulo_inclinacao_inicial
+        self.modelo = carregar_objeto(modelo_path)
+        if not self.modelo['vertices']:
+            print("Falha ao carregar o modelo da moto.")
+        self.escala = escala
+        self.rampa_acionada = False  # Para evitar múltiplos impulsos na mesma rampa
+
+    def esta_na_pista(self, x, z):
+        """
+        Verifica se a moto está dentro dos limites da pista.
+        Calcula a distância mínima entre a posição atual e os pontos centrais da pista.
+        """
+        margem = config.tamanho_moto / 2
+        dist_min = float('inf')
+        for (cx, cz) in config.pontos_centro_pista:
+            dist = math.hypot(x - cx, z - cz)
+            if dist < dist_min:
+                dist_min = dist
+        return dist_min <= ((config.largura_pista / 2) - margem)
+
+    def update(self, window, dt, lista_obstaculos, lista_rampas, lista_objetos_pedra):
+        """
+        Atualiza o estado da moto com base na entrada do usuário, aplicando física,
+        detecção de colisões e interações com rampas.
+        
+        Nesta função, a posição é atualizada utilizando as propriedades de glm.vec3.
+        Para funções que esperam uma lista (como a verificação de colisão), convertemos o vetor.
+        """
+        # Processa entrada
+        entrada_frente = 0.0
+        entrada_virar = 0.0
+        if glfw.get_key(window, glfw.KEY_UP) == glfw.PRESS:
+            entrada_frente = 1.0
+        if glfw.get_key(window, glfw.KEY_DOWN) == glfw.PRESS:
+            entrada_frente = -1.0
+        if glfw.get_key(window, glfw.KEY_LEFT) == glfw.PRESS:
+            entrada_virar += 1.0
+        if glfw.get_key(window, glfw.KEY_RIGHT) == glfw.PRESS:
+            entrada_virar -= 1.0
+
+        # Lógica de pulo
+        if glfw.get_key(window, glfw.KEY_SPACE) == glfw.PRESS:
+            if (self.pos.y <= config.nível_pista + (config.tamanho_moto / 2) + 0.001) and (self.velocidade_vertical == 0.0):
+                self.velocidade_vertical = config.velocidade_salto
+
+        # Atualiza velocidade horizontal
+        if entrada_frente > 0:
+            self.velocidade += config.aceleracao * dt
+        elif entrada_frente < 0:
+            self.velocidade -= config.desaceleracao * dt
+        else:
+            if self.velocidade > 0:
+                self.velocidade -= config.atrito * dt
+                if self.velocidade < 0:
+                    self.velocidade = 0
+            elif self.velocidade < 0:
+                self.velocidade += config.atrito * dt
+                if self.velocidade > 0:
+                    self.velocidade = 0
+
+        self.velocidade = max(-config.velocidade_maxima/2, min(self.velocidade, config.velocidade_maxima))
+        self.direcao += config.taxa_rotacao * entrada_virar * dt
+
+        # Atualiza o ângulo de inclinação (banking)
+        alvo_inclinacao = config.inclinacao_maxima * entrada_virar
+        if self.angulo_inclinacao < alvo_inclinacao:
+            self.angulo_inclinacao += config.taxa_alteracao_inclinacao * dt
+            if self.angulo_inclinacao > alvo_inclinacao:
+                self.angulo_inclinacao = alvo_inclinacao
+        elif self.angulo_inclinacao > alvo_inclinacao:
+            self.angulo_inclinacao -= config.taxa_alteracao_inclinacao * dt
+            if self.angulo_inclinacao < alvo_inclinacao:
+                self.angulo_inclinacao = alvo_inclinacao
+
+        # Atualiza a posição horizontal utilizando operações vetoriais
+        dx = self.velocidade * math.sin(self.direcao) * dt
+        dz = self.velocidade * math.cos(self.direcao) * dt
+        pos_anterior = glm.vec3(self.pos)  # Cópia da posição anterior para rollback em caso de colisão
+        self.pos.x += dx
+        self.pos.z += dz
+
+        # Verifica se a moto permanece na pista
+        if not self.esta_na_pista(self.pos.x, self.pos.z):
+            self.pos.x = pos_anterior.x
+            self.pos.z = pos_anterior.z
+            self.velocidade = 0
+
+        # Verifica colisão com obstáculos (converte posicao para lista)
+        if obstaculos.verificar_colisao_horizontal_obstaculo(list(self.pos), config.tamanho_moto, lista_obstaculos) is not None:
+            self.pos.x = pos_anterior.x
+            self.pos.z = pos_anterior.z
+            self.velocidade = 0
+            
+        colisao_objeto = obstaculos.verificar_colisao_pedra(list(self.pos), config.tamanho_moto, lista_objetos_pedra)
+        if colisao_objeto is not None:
+                # Calcula a altura do objeto: assume que o objeto repousa sobre o chão
+                altura_objeto = config.nível_chão + colisao_objeto['tamanho']
+                # Considera a base da moto (parte inferior)
+                base_moto = self.pos.y - (config.tamanho_moto / 2)
+                # Se a base da moto estiver abaixo do topo do objeto, é colisão; caso contrário, a moto está pulando por cima
+                if base_moto <= altura_objeto:
+                    self.pos.x = pos_anterior.x
+                    self.pos.z = pos_anterior.z
+                    self.velocidade = 0
+
+        # Física vertical: gravidade e pulo
+        if self.pos.y > (config.nível_pista + config.tamanho_moto / 2) or self.velocidade_vertical != 0.0:
+            self.velocidade_vertical -= config.gravidade * dt
+            self.pos.y += self.velocidade_vertical * dt
+
+        # Ajusta colisão vertical com obstáculos
+        for obs in lista_obstaculos:
+            meio = config.tamanho_moto / 2
+            if (self.pos.x + meio > obs['x'] - obs['largura'] / 2 and
+                self.pos.x - meio < obs['x'] + obs['largura'] / 2 and
+                self.pos.z + meio > obs['z'] - obs['profundidade'] / 2 and
+                self.pos.z - meio < obs['z'] + obs['profundidade'] / 2):
+                if self.pos.y - meio < obs['altura'] + config.nível_chão:
+                    self.pos.y = config.nível_chão + obs['altura'] + meio
+                    self.velocidade_vertical = 0.0
+
+        # Processa interação com rampas
+        sobre_alguma_rampa = False
+        for rampa in lista_rampas:
+            theta = rampa['orientacao']
+            dx_r = self.pos.x - rampa['x']
+            dz_r = self.pos.z - rampa['z']
+            # Converte para coordenadas locais da rampa (u: avanço, v: lateral)
+            u = dx_r * math.cos(theta) + dz_r * math.sin(theta)
+            v = -dx_r * math.sin(theta) + dz_r * math.cos(theta)
+            if -rampa['profundidade'] / 2 <= u <= rampa['profundidade'] / 2 and abs(v) <= (config.largura_pista / 2):
+                sobre_alguma_rampa = True
+                def altura_atual_rampa(u_val, v_val):
+                    return rampa['altura_maxima'] * (1 - (2 * u_val / rampa['profundidade']) ** 2) * (1 - (2 * v_val / config.largura_pista) ** 2)
+                alt_rampa = altura_atual_rampa(u, v) - config.deslocamento_rampa
+                meio_moto = config.tamanho_moto / 2
+                if self.pos.y - meio_moto < (config.nível_chão + alt_rampa):
+                    self.pos.y = config.nível_chão + alt_rampa + meio_moto
+                    self.velocidade_vertical = 0.0
+                # Impulso vertical se estiver centralizado lateralmente e na parte final da rampa (apenas uma vez)
+                if abs(v) < (config.largura_pista * 0.1) and u > (0.3 * rampa['profundidade']) and self.velocidade > 0 and self.velocidade_vertical == 0 and not self.rampa_acionada:
+                    self.velocidade_vertical = config.velocidade_salto_rampa
+                    self.rampa_acionada = True
+        if not sobre_alguma_rampa:
+            self.rampa_acionada = False
+
+        # Impede que a moto fique abaixo do nível da pista
+        if self.pos.y < (config.nível_pista + config.tamanho_moto / 2):
+            self.pos.y = config.nível_pista + config.tamanho_moto / 2
+            self.velocidade_vertical = 0.0
+
+    def draw(self):
+        """
+        Desenha a moto na posição e orientação atuais.
+        Utiliza a função 'desenhar_moto_model' passando a posição (glm.vec3) e demais parâmetros.
+        """
+        desenhar_moto_model(self.modelo, self.pos, self.direcao, self.angulo_inclinacao, self.escala)
+
+
+# obstaculo.py
+
+from OpenGL.GL import *
+import math
+import random
+import config
+import config
+import controller
+import glm
+
+def desenhar_lista_objetos_pedra(modelo: dict, objeto: list):
+    """
+    Percorre a lista de objetos finais e desenha cada obstáculo 3D.
+    Cada item da lista deve ser um dicionário com as chaves:
+      - 'x': coordenada X,
+      - 'z': coordenada Z,
+      - 'tamanho': fator de escala para o objeto.
+    
+    O objeto é desenhado no nível do chão (config.nível_pista) e sem rotação extra (ajuste se necessário).
+    """
+    x = objeto['x']
+    z = objeto['z']
+    fator_escala = objeto['tamanho']
+    # Definindo a posição Y: assume que o obstáculo repousa sobre o chão
+    y = config.nível_pista
+    posicao = glm.vec3(x, y, z)
+    # Para objetos estáticos, podemos manter a direção e inclinação em zero
+    angulo_direcao = 0.0
+    angulo_inclinacao = 0.0
+    
+    glPushMatrix()
+    glTranslatef(posicao.x, posicao.y, posicao.z)
+    glRotatef(math.degrees(angulo_direcao), 0, 1, 0)
+    glRotatef(angulo_inclinacao, 0, 0, 1)
+    glScalef(fator_escala, fator_escala, fator_escala)
+    # Se for necessário corrigir a orientação do modelo, pode-se aplicar uma rotação extra, por exemplo:
+    # glRotatef(180, 0, 1, 0)
+    controller.desenhar_objeto_carregado(modelo)
+    glPopMatrix()
+
+def verificar_colisao_horizontal_obstaculo(pos_objeto, tamanho, lista_obstaculos):
+    """
+    Verifica colisões horizontais (x, z) do objeto com os obstáculos.
+    Retorna o obstáculo em colisão (se houver) ou None.
+    """
+    meio = tamanho / 2
+    c_minx = pos_objeto[0] - meio
+    c_maxx = pos_objeto[0] + meio
+    c_minz = pos_objeto[2] - meio
+    c_maxz = pos_objeto[2] + meio
+    for obs in lista_obstaculos:
+        o_minx = obs['x'] - obs['largura'] / 2
+        o_maxx = obs['x'] + obs['largura'] / 2
+        o_minz = obs['z'] - obs['profundidade'] / 2
+        o_maxz = obs['z'] + obs['profundidade'] / 2
+        if ((c_minx < o_maxx) and (c_maxx > o_minx) and
+            (c_minz < o_maxz) and (c_maxz > o_minz)):
+            if pos_objeto[1] - meio < obs['altura'] + config.nível_chão:
+                return obs
+    return None
+
+def verificar_colisao_pedra(pos_objeto, tamanho_moto, lista_objetos_pedra):
+    """
+    Verifica a colisão horizontal (plano XZ) entre a moto e os objetos finais.
+    Cada objeto final tem um bounding box quadrado, com lado 'tamanho', centrado em (x, z).
+    
+    Parâmetros:
+      pos_objeto (list): [x, y, z] da moto.
+      tamanho_moto (float): Tamanho de referência da moto (usado para calcular o bounding box da moto).
+      lista_objetos_final (list): Lista de dicionários, cada um com as chaves 'x', 'z' e 'tamanho'.
+      
+    Retorna:
+      O objeto (dicionário) em colisão, se houver; caso contrário, None.
+    """
+    meio_moto = tamanho_moto / 2.0
+    moto_min_x = pos_objeto[0] - meio_moto
+    moto_max_x = pos_objeto[0] + meio_moto
+    moto_min_z = pos_objeto[2] - meio_moto
+    moto_max_z = pos_objeto[2] + meio_moto
+
+    for objeto in lista_objetos_pedra:
+        meio_objeto = objeto['tamanho'] / 2.0
+        objeto_min_x = objeto['x'] - meio_objeto
+        objeto_max_x = objeto['x'] + meio_objeto
+        objeto_min_z = objeto['z'] - meio_objeto
+        objeto_max_z = objeto['z'] + meio_objeto
+        if (moto_min_x < objeto_max_x and moto_max_x > objeto_min_x and
+            moto_min_z < objeto_max_z and moto_max_z > objeto_min_z):
+            return objeto
+    return None
+
+
+def desenhar_obstaculo(obstaculo):
+    """
+    Desenha um obstáculo (bloco) com material e textura.
+    A base do obstáculo é posicionada em config.nível_chão.
+    """
+    glPushMatrix()
+    material_ambiente = [0.2, 0.2, 0.2, 1.0]
+    material_diffuso  = [1.0, 1.0, 1.0, 1.0]
+    material_especular = [0.3, 0.3, 0.3, 1.0]
+    brilho = [30.0]
+    glMaterialfv(GL_FRONT, GL_AMBIENT, material_ambiente)
+    glMaterialfv(GL_FRONT, GL_DIFFUSE, material_diffuso)
+    glMaterialfv(GL_FRONT, GL_SPECULAR, material_especular)
+    glMaterialfv(GL_FRONT, GL_SHININESS, brilho)
+    
+    glBindTexture(GL_TEXTURE_2D, config.textura_obstaculo)
+    x = obstaculo['x']
+    z = obstaculo['z']
+    largura = obstaculo['largura']
+    profundidade = obstaculo['profundidade']
+    altura = obstaculo['altura']
+    meio_largura = largura / 2
+    meio_profundidade = profundidade / 2
+    y_centro = config.nível_chão + (altura / 2)
+    
+    glTranslatef(x, y_centro, z)
+    glBegin(GL_QUADS)
+    # Face frontal
+    glTexCoord2f(0, 0); glVertex3f(-meio_largura, -altura/2, meio_profundidade)
+    glTexCoord2f(1, 0); glVertex3f(meio_largura, -altura/2, meio_profundidade)
+    glTexCoord2f(1, 1); glVertex3f(meio_largura, altura/2, meio_profundidade)
+    glTexCoord2f(0, 1); glVertex3f(-meio_largura, altura/2, meio_profundidade)
+    # Face traseira
+    glTexCoord2f(0, 0); glVertex3f(-meio_largura, -altura/2, -meio_profundidade)
+    glTexCoord2f(1, 0); glVertex3f(-meio_largura, altura/2, -meio_profundidade)
+    glTexCoord2f(1, 1); glVertex3f(meio_largura, altura/2, -meio_profundidade)
+    glTexCoord2f(0, 1); glVertex3f(meio_largura, -altura/2, -meio_profundidade)
+    # Face esquerda
+    glTexCoord2f(0, 0); glVertex3f(-meio_largura, -altura/2, -meio_profundidade)
+    glTexCoord2f(1, 0); glVertex3f(-meio_largura, -altura/2, meio_profundidade)
+    glTexCoord2f(1, 1); glVertex3f(-meio_largura, altura/2, meio_profundidade)
+    glTexCoord2f(0, 1); glVertex3f(-meio_largura, altura/2, -meio_profundidade)
+    # Face direita
+    glTexCoord2f(0, 0); glVertex3f(meio_largura, -altura/2, -meio_profundidade)
+    glTexCoord2f(1, 0); glVertex3f(meio_largura, altura/2, -meio_profundidade)
+    glTexCoord2f(1, 1); glVertex3f(meio_largura, altura/2, meio_profundidade)
+    glTexCoord2f(0, 1); glVertex3f(meio_largura, -altura/2, meio_profundidade)
+    # Face superior
+    glTexCoord2f(0, 0); glVertex3f(-meio_largura, altura/2, -meio_profundidade)
+    glTexCoord2f(1, 0); glVertex3f(-meio_largura, altura/2, meio_profundidade)
+    glTexCoord2f(1, 1); glVertex3f(meio_largura, altura/2, meio_profundidade)
+    glTexCoord2f(0, 1); glVertex3f(meio_largura, altura/2, -meio_profundidade)
+    # Face inferior
+    glTexCoord2f(0, 0); glVertex3f(-meio_largura, -altura/2, -meio_profundidade)
+    glTexCoord2f(1, 0); glVertex3f(meio_largura, -altura/2, -meio_profundidade)
+    glTexCoord2f(1, 1); glVertex3f(meio_largura, -altura/2, meio_profundidade)
+    glTexCoord2f(0, 1); glVertex3f(-meio_largura, -altura/2, meio_profundidade)
+    glEnd()
+    glPopMatrix()
+
+def gerar_obstaculos():
+    """
+    Gera uma lista de obstáculos (blocos) posicionados aleatoriamente na pista,
+    garantindo um espaçamento mínimo entre eles.
+    """
+    obstaculos = []
+    n = len(config.pontos_centro_pista)
+    min_intervalo = n // (10 * 2)
+    indices_escolhidos = []
+    tentativas = 0
+    while len(indices_escolhidos) < 10 and tentativas < 1000:
+        idx = random.randint(0, n - 2)
+        if all(min(abs(idx - outro), n - abs(idx - outro)) >= min_intervalo for outro in indices_escolhidos):
+            indices_escolhidos.append(idx)
+        tentativas += 1
+    for idx in indices_escolhidos:
+        cx, cz = config.pontos_centro_pista[idx]
+        pt_anterior = config.pontos_centro_pista[idx - 1]
+        pt_proximo = config.pontos_centro_pista[(idx + 1) % n]
+        dx = pt_proximo[0] - pt_anterior[0]
+        dz = pt_proximo[1] - pt_anterior[1]
+        comprimento = math.hypot(dx, dz)
+        if comprimento != 0:
+            nx = -dz / comprimento
+            nz = dx / comprimento
+        else:
+            nx, nz = 0, 0
+        max_offset = (config.largura_pista / 2) - (config.tamanho_moto * 2 / 2) - 1.0
+        offset = random.uniform(0.5, max_offset)
+        if random.choice([True, False]):
+            offset = -offset
+        ox = cx + offset * nx
+        oz = cz + offset * nz
+        altura_obs = random.uniform(config.tamanho_moto, config.tamanho_moto * 4.0)
+        obstaculos.append({
+            'x': ox,
+            'z': oz,
+            'largura': config.tamanho_moto * 2.0,
+            'profundidade': config.tamanho_moto * 2.0,
+            'altura': altura_obs
+        })
+    return obstaculos
+
+def gerar_rampas():
+    """
+    Gera uma lista de rampas posicionadas aleatoriamente na pista.
+    Cada rampa é definida a partir de um ponto central e orientação dada pela tangente.
+    """
+    rampas = []
+    n = len(config.pontos_centro_pista)
+    min_intervalo = n // (12 * 2)
+    indices_escolhidos = []
+    tentativas = 0
+    while len(indices_escolhidos) < 12 and tentativas < 1000:
+        idx = random.randint(0, n - 2)
+        if all(min(abs(idx - outro), n - abs(idx - outro)) >= min_intervalo for outro in indices_escolhidos):
+            indices_escolhidos.append(idx)
+        tentativas += 1
+    for idx in indices_escolhidos:
+        cx, cz = config.pontos_centro_pista[idx]
+        pt_anterior = config.pontos_centro_pista[idx - 1]
+        pt_proximo = config.pontos_centro_pista[(idx + 1) % n]
+        dx = pt_proximo[0] - pt_anterior[0]
+        dz = pt_proximo[1] - pt_anterior[1]
+        theta = math.atan2(dx, dz)  # orientação da rampa
+        variacao = random.uniform(-0.2, 0.2)
+        rampas.append({
+            'x': cx,
+            'z': cz,
+            'profundidade': 20.0,
+            'altura_maxima': 3.5,
+            'orientacao': theta + variacao
+        })
+    return rampas
+
+def desenhar_rampa(rampa):
+    """
+    Desenha uma rampa com material e textura.
+    A rampa é definida a partir de um ponto central e orientação.
+    """
+    profundidade = rampa['profundidade']
+    meio_profundidade = profundidade / 2
+    meio_largura = config.largura_pista / 2  # a rampa ocupa toda a largura da pista
+    cx, cz = rampa['x'], rampa['z']
+    theta = rampa['orientacao']
+    
+    def altura_rampa(u, v):
+        return rampa['altura_maxima'] * (1 - (2*u/profundidade)**2) * (1 - (2*v/config.largura_pista)**2)
+    
+    subdivisoes_u = 12
+    subdivisoes_v = 10
+    du = profundidade / subdivisoes_u
+    dv = config.largura_pista / subdivisoes_v
+
+    malha = []
+    for i in range(subdivisoes_u + 1):
+        linha = []
+        u = -meio_profundidade + i * du
+        for j in range(subdivisoes_v + 1):
+            v = -meio_largura + j * dv
+            h = altura_rampa(u, v)
+            x_mundial = cx + u * math.cos(theta) - v * math.sin(theta)
+            z_mundial = cz + u * math.sin(theta) + v * math.cos(theta)
+            linha.append((x_mundial, config.nível_chão + h - config.deslocamento_rampa, z_mundial))
+        malha.append(linha)
+    
+    # Configura material para a rampa
+    material_ambiente = [0.3, 0.3, 0.3, 1.0]
+    material_diffuso  = [1.0, 1.0, 1.0, 1.0]
+    material_especular = [0.2, 0.2, 0.2, 1.0]
+    brilho = [40.0]
+    glMaterialfv(GL_FRONT, GL_AMBIENT, material_ambiente)
+    glMaterialfv(GL_FRONT, GL_DIFFUSE, material_diffuso)
+    glMaterialfv(GL_FRONT, GL_SPECULAR, material_especular)
+    glMaterialfv(GL_FRONT, GL_SHININESS, brilho)
+    
+    glBindTexture(GL_TEXTURE_2D, config.textura_rampa)
+    
+    # Desenha o topo da rampa (malha de quads)
+    for i in range(subdivisoes_u):
+        glBegin(GL_QUAD_STRIP)
+        for j in range(subdivisoes_v + 1):
+            s = j / subdivisoes_v
+            t_coord = i / subdivisoes_u
+            glTexCoord2f(s, t_coord)
+            glVertex3f(*malha[i][j])
+            glTexCoord2f(s, t_coord + 1/subdivisoes_u)
+            glVertex3f(*malha[i+1][j])
+        glEnd()
+
+# pista.py
+from OpenGL.GL import *
+import math
+import utils
+import config
+
+def carregar_texturas_chao():
+    """
+    Carrega as texturas para o chão a partir de arquivos de imagem.
+    """
+    arquivos = ["assets/floor01.jpg", "assets/floor02.jpg"]
+    for arq in arquivos:
+        tex = utils.carregar_textura(arq)
+        if tex != 0:
+            config.lista_texturas_chao.append(tex)
+    if not config.lista_texturas_chao:
+        print("Nenhuma textura do chão foi carregada.")
+
+def carregar_textura_pista():
+    """
+    Carrega a textura para a pista.
+    """
+    config.textura_pista = utils.carregar_textura("assets/obstaculo.jpg")
+
+def gerar_pontos_pista(num_pontos):
+    """
+    Gera pontos interpolados ao longo da pista usando os pontos-chave.
+    Atualiza a lista config.pontos_centro_pista.
+    """
+    pts = []
+    pontos = config.pontos_chave
+    n = len(pontos)
+    segmentos = n  
+    amostras_por_segmento = num_pontos // segmentos
+    for i in range(segmentos):
+        p0 = pontos[(i - 1) % n]
+        p1 = pontos[i]
+        p2 = pontos[(i + 1) % n]
+        p3 = pontos[(i + 2) % n]
+        for j in range(amostras_por_segmento):
+            t = j / amostras_por_segmento
+            pts.append(utils.interpolacao_catmull_rom(p0, p1, p2, p3, t))
+    pts.append(pts[0])
+    config.pontos_centro_pista[:] = pts
+
+def desenhar_chao():
+    """
+    Desenha o chão como uma malha (grid) texturizada que se estende por EXTENSAO_CHAO.
+    """
+    glPushMatrix()
+    pos_y = config.nível_chão
+
+    subdivisoes = 20
+    tamanho_total = config.EXTENSAO_CHAO
+    passo = tamanho_total / subdivisoes
+    inicio = -tamanho_total / 2.0
+
+    num_texturas = len(config.lista_texturas_chao) if config.lista_texturas_chao else 1
+    alpha = 5.0 / num_texturas
+
+    glDisable(GL_LIGHTING)
+    glEnable(GL_TEXTURE_2D)
+    glEnable(GL_BLEND)
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+
+    for i in range(subdivisoes):
+        for j in range(subdivisoes):
+            x0 = inicio + i * passo
+            z0 = inicio + j * passo
+            x1 = x0 + passo
+            z1 = z0 + passo
+            for tex in config.lista_texturas_chao:
+                glBindTexture(GL_TEXTURE_2D, tex)
+                glColor4f(1.0, 1.0, 1.0, alpha)
+                glBegin(GL_QUADS)
+                glTexCoord2f(0, 0); glVertex3f(x0, pos_y, z0)
+                glTexCoord2f(1, 0); glVertex3f(x1, pos_y, z0)
+                glTexCoord2f(1, 1); glVertex3f(x1, pos_y, z1)
+                glTexCoord2f(0, 1); glVertex3f(x0, pos_y, z1)
+                glEnd()
+            glColor4f(1.0, 1.0, 1.0, 1.0)
+    glDisable(GL_BLEND)
+    glEnable(GL_LIGHTING)
+    glPopMatrix()
+
+def desenhar_pista():
+    """
+    Desenha a pista utilizando um quad strip com a textura e iluminação apropriadas.
+    """
+    # Configura material da pista
+    material_ambiente = [0.2, 0.2, 0.2, 1.0]
+    material_diffuso  = [1.0, 1.0, 1.0, 1.0]
+    material_especular = [0.1, 0.1, 0.1, 1.0]
+    brilho = [50.0]
+    glMaterialfv(GL_FRONT, GL_AMBIENT, material_ambiente)
+    glMaterialfv(GL_FRONT, GL_DIFFUSE, material_diffuso)
+    glMaterialfv(GL_FRONT, GL_SPECULAR, material_especular)
+    glMaterialfv(GL_FRONT, GL_SHININESS, brilho)
+    
+    glBindTexture(GL_TEXTURE_2D, config.textura_pista)
+    glColor3f(1.0, 1.0, 1.0)
+    
+    glNormal3f(0, 1, 0)
+    glBegin(GL_QUAD_STRIP)
+    n = len(config.pontos_centro_pista)
+    escala_textura = 0.1
+    for i in range(n):
+        (cx, cz) = config.pontos_centro_pista[i]
+        pt_anterior = config.pontos_centro_pista[i - 1]
+        pt_proximo = config.pontos_centro_pista[(i + 1) % n]
+        dx = pt_proximo[0] - pt_anterior[0]
+        dz = pt_proximo[1] - pt_anterior[1]
+        comprimento = math.hypot(dx, dz)
+        if comprimento != 0:
+            nx = -dz / comprimento
+            nz = dx / comprimento
+        else:
+            nx, nz = 0, 0
+        x_externo = cx + (config.largura_pista / 2) * nx
+        z_externo = cz + (config.largura_pista / 2) * nz
+        x_interno = cx - (config.largura_pista / 2) * nx
+        z_interno = cz - (config.largura_pista / 2) * nz
+        
+        glTexCoord2f(x_externo * escala_textura, z_externo * escala_textura)
+        glVertex3f(x_externo, config.nível_pista, z_externo)
+        glTexCoord2f(x_interno * escala_textura, z_interno * escala_textura)
+        glVertex3f(x_interno, config.nível_pista, z_interno)
+    glEnd()
+
+
+# skybox.py
+
+from OpenGL.GL import *
+from OpenGL.GLU import *
+import config
+import utils
+
+def carregar_texturas_skybox():
+    """
+    Carrega as texturas do skybox.
+    """
+    config.textura_frente   = utils.carregar_textura("assets/skybox/front.tga", True)
+    config.textura_tras     = utils.carregar_textura("assets/skybox/back.tga", True)
+    config.textura_direita  = utils.carregar_textura("assets/skybox/right.tga", True)
+    config.textura_esquerda = utils.carregar_textura("assets/skybox/left.tga", True)
+    config.textura_cima     = utils.carregar_textura("assets/skybox/up.tga", True)
+    config.textura_baixo    = utils.carregar_textura("assets/skybox/bottom.tga", True)
+
+def desenhar_skybox():
+    """
+    Desenha o skybox com as faces texturizadas.
+    
+    Agora, a iluminação não é desabilitada e o skybox recebe a iluminação global
+    configurada em configurar_opengl(), fazendo com que as faces, mesmo as opostas à
+    fonte principal, fiquem mais claras graças à luz de preenchimento.
+    """
+    glPushMatrix()
+    # Não desabilita a iluminação – queremos que o skybox seja afetado pela iluminação global
+    glDepthMask(GL_FALSE)
+    glTranslatef(config.pos_camera[0], config.pos_camera[1], config.pos_camera[2])
+    tamanho = config.TAMANHO_SKYBOX / 2.0
+
+    glEnable(GL_TEXTURE_2D)
+    
+    # Face frontal (vista: -Z)
+    glBindTexture(GL_TEXTURE_2D, config.textura_frente)
+    glColor3f(1.0, 1.0, 1.0)
+    glBegin(GL_QUADS)
+    glTexCoord2f(0, 0); glVertex3f(-tamanho, -tamanho, -tamanho)
+    glTexCoord2f(1, 0); glVertex3f(tamanho, -tamanho, -tamanho)
+    glTexCoord2f(1, 1); glVertex3f(tamanho, tamanho, -tamanho)
+    glTexCoord2f(0, 1); glVertex3f(-tamanho, tamanho, -tamanho)
+    glEnd()
+
+    # Face traseira (vista: +Z)
+    glBindTexture(GL_TEXTURE_2D, config.textura_tras)
+    glBegin(GL_QUADS)
+    glTexCoord2f(0, 0); glVertex3f(tamanho, -tamanho, tamanho)
+    glTexCoord2f(1, 0); glVertex3f(-tamanho, -tamanho, tamanho)
+    glTexCoord2f(1, 1); glVertex3f(-tamanho, tamanho, tamanho)
+    glTexCoord2f(0, 1); glVertex3f(tamanho, tamanho, tamanho)
+    glEnd()
+
+    # Face esquerda (vista: -X)
+    glBindTexture(GL_TEXTURE_2D, config.textura_esquerda)
+    glBegin(GL_QUADS)
+    glTexCoord2f(0, 0); glVertex3f(-tamanho, -tamanho, tamanho)
+    glTexCoord2f(1, 0); glVertex3f(-tamanho, -tamanho, -tamanho)
+    glTexCoord2f(1, 1); glVertex3f(-tamanho, tamanho, -tamanho)
+    glTexCoord2f(0, 1); glVertex3f(-tamanho, tamanho, tamanho)
+    glEnd()
+
+    # Face direita (vista: +X)
+    glBindTexture(GL_TEXTURE_2D, config.textura_direita)
+    glBegin(GL_QUADS)
+    glTexCoord2f(0, 0); glVertex3f(tamanho, -tamanho, -tamanho)
+    glTexCoord2f(1, 0); glVertex3f(tamanho, -tamanho, tamanho)
+    glTexCoord2f(1, 1); glVertex3f(tamanho, tamanho, tamanho)
+    glTexCoord2f(0, 1); glVertex3f(tamanho, tamanho, -tamanho)
+    glEnd()
+
+    # Face superior (vista: +Y)
+    glBindTexture(GL_TEXTURE_2D, config.textura_cima)
+    glBegin(GL_QUADS)
+    glTexCoord2f(0, 0); glVertex3f(-tamanho, tamanho, -tamanho)
+    glTexCoord2f(1, 0); glVertex3f(tamanho, tamanho, -tamanho)
+    glTexCoord2f(1, 1); glVertex3f(tamanho, tamanho, tamanho)
+    glTexCoord2f(0, 1); glVertex3f(-tamanho, tamanho, tamanho)
+    glEnd()
+
+    # Face inferior (vista: -Y)
+    glBindTexture(GL_TEXTURE_2D, config.textura_baixo)
+    glBegin(GL_QUADS)
+    glTexCoord2f(0, 0); glVertex3f(-tamanho, -tamanho, tamanho)
+    glTexCoord2f(1, 0); glVertex3f(tamanho, -tamanho, tamanho)
+    glTexCoord2f(1, 1); glVertex3f(tamanho, -tamanho, -tamanho)
+    glTexCoord2f(0, 1); glVertex3f(-tamanho, -tamanho, -tamanho)
+    glEnd()
+
+    glDepthMask(GL_TRUE)
+    glPopMatrix()
+
+
+# tela_inicial.py
+
+# tela_inicial.py
+import glfw
+from OpenGL.GL import *
+from OpenGL.GLU import *
+import math
+import config
+import utils
+import random
+
+def gerar_pontos_mini():
+    """
+    Gera pontos interpolados para o preview da pista usando os pontos-chave.
+    Utiliza a função de interpolação Catmull-Rom (definida em utils) e gera
+    um número reduzido de pontos para o preview.
+    """
+    pontos = config.pontos_chave
+    n = len(pontos)
+    num_amostras = 100  # número reduzido para o preview
+    pts_mini = []
+    amostras_por_segmento = num_amostras // n
+    for i in range(n):
+        p0 = pontos[(i - 1) % n]
+        p1 = pontos[i]
+        p2 = pontos[(i + 1) % n]
+        p3 = pontos[(i + 2) % n]
+        for j in range(amostras_por_segmento):
+            t = j / amostras_por_segmento
+            pt = utils.interpolacao_catmull_rom(p0, p1, p2, p3, t)
+            pts_mini.append(pt)
+    pts_mini.append(pts_mini[0])
+    return pts_mini
+
+def calcular_bbox(pts):
+    """Calcula a caixa delimitadora (bounding box) dos pontos."""
+    xs = [pt[0] for pt in pts]
+    zs = [pt[1] for pt in pts]
+    return min(xs), max(xs), min(zs), max(zs)
+
+def desenhar_track_mini(pts_mini):
+    """Desenha a pista do preview (mini) como um loop de linhas com cor branca."""
+    glColor3f(1, 1, 1)
+    glLineWidth(20)
+    glBegin(GL_LINE_LOOP)
+    for pt in pts_mini:
+        # pt[0] = x e pt[1] = z (sistema 2D do preview)
+        glVertex2f(pt[0], pt[1])
+    glEnd()
+
+def desenhar_textura(x, y, largura, altura, textura):
+    """
+    Desenha um retângulo com a textura informada.
+    (x,y) é o centro do retângulo em coordenadas de tela.
+    """
+    metade_largura = largura / 2
+    metade_altura = altura / 2
+    glEnable(GL_TEXTURE_2D)
+    glBindTexture(GL_TEXTURE_2D, textura)
+    glColor3f(1, 1, 1)
+    glBegin(GL_QUADS)
+    glTexCoord2f(0, 0); glVertex2f(x - metade_largura, y - metade_altura)
+    glTexCoord2f(1, 0); glVertex2f(x + metade_largura, y - metade_altura)
+    glTexCoord2f(1, 1); glVertex2f(x + metade_largura, y + metade_altura)
+    glTexCoord2f(0, 1); glVertex2f(x - metade_largura, y + metade_altura)
+    glEnd()
+    glDisable(GL_TEXTURE_2D)
+
+def distancia_ponto_segmento(px, py, x1, y1, x2, y2):
+    """
+    Retorna a distância do ponto (px,py) ao segmento definido por (x1,y1)-(x2,y2).
+    """
+    # Vetor do segmento
+    vx = x2 - x1
+    vy = y2 - y1
+    # Se o segmento tiver comprimento zero:
+    if vx == 0 and vy == 0:
+        return math.hypot(px - x1, py - y1)
+    # Parâmetro da projeção
+    t = ((px - x1) * vx + (py - y1) * vy) / (vx*vx + vy*vy)
+    t = max(0, min(1, t))
+    proj_x = x1 + t * vx
+    proj_y = y1 + t * vy
+    return math.hypot(px - proj_x, py - proj_y)
+
+def tela_inicial(janela):
+    """
+    Exibe a tela inicial para mapeamento da pista.
+    
+    - Exibe um preview reduzido da pista (vista de cima) no centro da tela.
+    - Permite que o usuário registre cliques sobre a pista para definir posições
+      de obstáculos (vermelho), rampas/morros (azul) ou objetos (verde).
+    - Cada clique é aceito somente se estiver próximo da linha do preview.
+    - Exibe quatro botões: Obstáculo, Rampa, Objeto e Iniciar Jogo, com imagens de fundo.
+      
+    Retorna:
+      lista_obstaculos_final, lista_rampas_final, lista_objetos_pedra
+    """
+    pts_mini = gerar_pontos_mini()
+    min_x, max_x, min_z, max_z = calcular_bbox(pts_mini)
+    margem = 20  # margem extra para a visualização
+    vis_left = min_x - margem
+    vis_right = max_x + margem
+    vis_bottom = min_z - margem
+    vis_top = max_z + margem
+
+    # Obtemos o tamanho da janela
+    window_width, window_height = glfw.get_framebuffer_size(janela)
+
+    # Carregar texturas para o fundo e os botões
+    textura_fundo = utils.carregar_textura("assets/fundo.jpg")
+    if textura_fundo == 0:
+        textura_fundo = None  # usaremos cor se não carregar
+    textura_botao_iniciar = utils.carregar_textura("assets/botao_iniciar.jpg")
+    textura_botao_obstaculo = utils.carregar_textura("assets/botao_obstaculo.jpg")
+    textura_botao_rampa = utils.carregar_textura("assets/botao_rampa.jpg")
+    textura_botao_objeto = utils.carregar_textura("assets/botao_objeto.jpg")
+
+    # Define as áreas dos botões em coordenadas de tela (sistema 2D com origem no canto inferior esquerdo)
+    botao_iniciar = {'x': window_width / 2, 'y': 80, 'largura': 250, 'altura': 50}
+    botao_obstaculo = {'x': window_width / 2 - 200, 'y': window_height - 80, 'largura': 195, 'altura': 40}
+    botao_rampa = {'x': window_width / 2, 'y': window_height - 80, 'largura': 195, 'altura': 40}
+    botao_objeto = {'x': window_width / 2 + 200, 'y': window_height - 80, 'largura': 195, 'altura': 40}
+
+    # Variável para o tipo atual: 0 para obstáculo, 1 para rampa/morro, 2 para objeto
+    tipo_atual = 0
+    jogo_iniciado = False
+
+    # Listas para armazenar os cliques registrados
+    lista_cliques = []  # cada item: (world_x, world_z, tipo)
+    # Listas finais que serão retornadas
+    lista_obstaculos_final = []
+    lista_rampas_final = []
+    lista_objetos_pedra = []
+
+    # Tolerância para considerar o clique "na linha" (em unidades do preview)
+    tolerancia = 10
+
+    def converter_coordenadas(x, y):
+        """
+        Converte as coordenadas do mouse (em pixels, com origem no canto superior esquerdo)
+        para as coordenadas do sistema do preview (usando a projeção definida).
+        """
+        ndc_x = x / window_width
+        ndc_y = 1 - y / window_height  # inverte para origem inferior
+        world_x = vis_left + ndc_x * (vis_right - vis_left)
+        world_z = vis_bottom + ndc_y * (vis_top - vis_bottom)
+        return world_x, world_z
+
+    # Loop da tela inicial
+    while not jogo_iniciado and not glfw.window_should_close(janela):
+        glfw.poll_events()
+
+        # Verifica se houve clique do mouse
+        if glfw.get_mouse_button(janela, glfw.MOUSE_BUTTON_LEFT) == glfw.PRESS:
+            x, y = glfw.get_cursor_pos(janela)
+            pos_mouse_tela = (x, window_height - y)  # sistema com origem inferior
+
+            # Verifica se o clique ocorreu no botão Iniciar Jogo
+            bx = botao_iniciar['x']
+            by = botao_iniciar['y']
+            bw = botao_iniciar['largura']
+            bh = botao_iniciar['altura']
+            if (pos_mouse_tela[0] >= bx - bw/2 and pos_mouse_tela[0] <= bx + bw/2 and
+                pos_mouse_tela[1] >= by - bh/2 and pos_mouse_tela[1] <= by + bh/2):
+                jogo_iniciado = True
+                glfw.wait_events_timeout(0.2)
+                continue
+
+            # Verifica se o clique ocorreu no botão de Obstáculo
+            bx = botao_obstaculo['x']
+            by = botao_obstaculo['y']
+            bw = botao_obstaculo['largura']
+            bh = botao_obstaculo['altura']
+            if (pos_mouse_tela[0] >= bx - bw/2 and pos_mouse_tela[0] <= bx + bw/2 and
+                pos_mouse_tela[1] >= by - bh/2 and pos_mouse_tela[1] <= by + bh/2):
+                tipo_atual = 0
+                glfw.wait_events_timeout(0.2)
+                continue
+
+            # Verifica se o clique ocorreu no botão de Rampa
+            bx = botao_rampa['x']
+            by = botao_rampa['y']
+            bw = botao_rampa['largura']
+            bh = botao_rampa['altura']
+            if (pos_mouse_tela[0] >= bx - bw/2 and pos_mouse_tela[0] <= bx + bw/2 and
+                pos_mouse_tela[1] >= by - bh/2 and pos_mouse_tela[1] <= by + bh/2):
+                tipo_atual = 1
+                glfw.wait_events_timeout(0.2)
+                continue
+
+            # Verifica se o clique ocorreu no botão de Objeto
+            bx = botao_objeto['x']
+            by = botao_objeto['y']
+            bw = botao_objeto['largura']
+            bh = botao_objeto['altura']
+            if (pos_mouse_tela[0] >= bx - bw/2 and pos_mouse_tela[0] <= bx + bw/2 and
+                pos_mouse_tela[1] >= by - bh/2 and pos_mouse_tela[1] <= by + bh/2):
+                tipo_atual = 2
+                glfw.wait_events_timeout(0.2)
+                continue
+
+            # Se não foi em nenhum botão, verifica se o clique ocorreu na área do preview
+            world_x, world_z = converter_coordenadas(x, y)
+            # Verifica se o ponto está dentro do bounding box do preview
+            if world_x < vis_left or world_x > vis_right or world_z < vis_bottom or world_z > vis_top:
+                glfw.wait_events_timeout(0.2)
+                continue
+
+            # Verifica se o clique está próximo da linha do preview
+            clicou_na_linha = False
+            for i in range(len(pts_mini)-1):
+                x1, z1 = pts_mini[i]
+                x2, z2 = pts_mini[i+1]
+                dist = distancia_ponto_segmento(world_x, world_z, x1, z1, x2, z2)
+                if dist <= tolerancia:
+                    clicou_na_linha = True
+                    break
+
+            if clicou_na_linha:
+                lista_cliques.append((world_x, world_z, tipo_atual))
+            # Aguarda um pequeno intervalo para evitar múltiplos registros
+            glfw.wait_events_timeout(0.2)
+
+        # Desenha o fundo
+        glMatrixMode(GL_PROJECTION)
+        glLoadIdentity()
+        gluOrtho2D(0, window_width, 0, window_height)
+        glMatrixMode(GL_MODELVIEW)
+        glLoadIdentity()
+        if textura_fundo:
+            # Desenha uma quad que cobre toda a tela
+            glEnable(GL_TEXTURE_2D)
+            glBindTexture(GL_TEXTURE_2D, textura_fundo)
+            glColor3f(1, 1, 1)
+            glBegin(GL_QUADS)
+            glTexCoord2f(0, 0); glVertex2f(0, 0)
+            glTexCoord2f(1, 0); glVertex2f(window_width, 0)
+            glTexCoord2f(1, 1); glVertex2f(window_width, window_height)
+            glTexCoord2f(0, 1); glVertex2f(0, window_height)
+            glEnd()
+            glDisable(GL_TEXTURE_2D)
+        else:
+            glClearColor(0.8, 0.8, 0.8, 1.0)  # cinza claro
+
+        # Desenha o preview da pista
+        glMatrixMode(GL_PROJECTION)
+        glLoadIdentity()
+        gluOrtho2D(vis_left, vis_right, vis_bottom, vis_top)
+        glMatrixMode(GL_MODELVIEW)
+        glLoadIdentity()
+        desenhar_track_mini(pts_mini)
+
+        # Em seguida, desenha os pontos registrados sobre o preview:
+        for (px, pz, tipo) in lista_cliques:
+            if tipo == 0:
+                glColor3f(1, 0, 0)  # obstáculo em vermelho
+            elif tipo == 1:
+                glColor3f(0, 0, 1)  # rampa/morro em azul
+            elif tipo == 2:
+                glColor3f(0, 1, 0)  # objeto em verde
+            glPointSize(20)
+            glBegin(GL_POINTS)
+            glVertex2f(px, pz)
+            glEnd()
+
+        # Desenha os botões usando uma projeção em tela
+        glMatrixMode(GL_PROJECTION)
+        glLoadIdentity()
+        gluOrtho2D(0, window_width, 0, window_height)
+        glMatrixMode(GL_MODELVIEW)
+        glLoadIdentity()
+        if textura_botao_iniciar:
+            desenhar_textura(botao_iniciar['x'], botao_iniciar['y'], botao_iniciar['largura'], botao_iniciar['altura'], textura_botao_iniciar)
+        if textura_botao_obstaculo:
+            desenhar_textura(botao_obstaculo['x'], botao_obstaculo['y'], botao_obstaculo['largura'], botao_obstaculo['altura'], textura_botao_obstaculo)
+        if textura_botao_rampa:
+            desenhar_textura(botao_rampa['x'], botao_rampa['y'], botao_rampa['largura'], botao_rampa['altura'], textura_botao_rampa)
+        if textura_botao_objeto:
+            desenhar_textura(botao_objeto['x'], botao_objeto['y'], botao_objeto['largura'], botao_objeto['altura'], textura_botao_objeto)
+
+        glfw.swap_buffers(janela)
+
+    # Após o clique no botão "Iniciar Jogo", processa os cliques registrados
+    for (px, pz, tipo) in lista_cliques:
+        if tipo == 0:
+            # Gera um multiplicador aleatório entre 1.0 e 3.0 para a altura do obstáculo
+            multiplicador_altura = random.uniform(1.0, 3.0)
+            # Define valores padrão para obstáculo
+            obstaculo = {
+                'x': px,
+                'z': pz,
+                'largura': config.tamanho_moto * 2.0,
+                'profundidade': config.tamanho_moto * 2.0,
+                'altura': config.tamanho_moto * multiplicador_altura  
+            }
+            lista_obstaculos_final.append(obstaculo)
+        elif tipo == 1:
+            # Define valores padrão para rampa/morro
+            multiplicador_altura = random.uniform(2.0, 4.0)
+            rampa = {
+                'x': px,
+                'z': pz,
+                'profundidade': 15.0,
+                'altura_maxima': multiplicador_altura,
+                'orientacao': 0.0 
+            }
+            lista_rampas_final.append(rampa)
+        elif tipo == 2:
+            # Define valores padrão para objeto
+            objeto = {
+                'x': px,
+                'z': pz,
+                'tamanho': config.tamanho_moto * 1.5 
+            }
+            lista_objetos_pedra.append(objeto)
+    
+    return lista_obstaculos_final, lista_rampas_final, lista_objetos_pedra
+
+
+# utils.py
+
+from OpenGL.GL import *
+from PIL import Image
+import math
+
+def carregar_textura(caminho_imagem: str, skybox: bool = False) -> int:
+    """
+    Carrega uma imagem e cria uma textura OpenGL.
+    Se a extensão for .tga, utiliza RGBA; caso contrário, utiliza RGB.
+    """
+    try:
+        imagem = Image.open(caminho_imagem)
+    except Exception as erro:
+        print(f"Erro ao carregar {caminho_imagem}: {erro}")
+        return 0
+
+    imagem = imagem.transpose(Image.FLIP_TOP_BOTTOM)
+    if caminho_imagem.lower().endswith('.tga'):
+        imagem = imagem.convert("RGBA")
+        modo = GL_RGBA
+    else:
+        imagem = imagem.convert("RGB")
+        modo = GL_RGB
+
+    dados_imagem = imagem.tobytes()
+    largura, altura = imagem.size
+
+    id_textura = glGenTextures(1)
+    glBindTexture(GL_TEXTURE_2D, id_textura)
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
+    glTexImage2D(GL_TEXTURE_2D, 0, modo, largura, altura, 0, modo, GL_UNSIGNED_BYTE, dados_imagem)
+    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+    if skybox:
+        glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+        glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+    return id_textura
+
+def configurar_opengl():
+    """
+    Configura os estados iniciais do OpenGL, incluindo teste de profundidade,
+    texturas e iluminação com efeito de pôr do sol.
+    
+    Configura duas luzes:
+      - GL_LIGHT0: luz principal com tom quente, simulando o sol poente (vindoura da esquerda).
+      - GL_LIGHT1: luz de preenchimento (fill light) de menor intensidade, vindo do lado oposto.
+      
+    Essa configuração faz com que os objetos da cena (skybox, chão, pista, obstáculos etc.)
+    recebam iluminação de forma homogênea, evitando que as faces opostas à fonte principal fiquem
+    excessivamente escuras.
+    """
+    glEnable(GL_DEPTH_TEST)
+    glEnable(GL_TEXTURE_2D)
+    
+    # Habilita a iluminação e define o modelo de sombreamento suave
+    glEnable(GL_LIGHTING)
+    glShadeModel(GL_SMOOTH)
+
+    # ---------------------------
+    # Configuração da Luz Principal (GL_LIGHT0)
+    # ---------------------------
+    glEnable(GL_LIGHT0)
+    cor_ambiente_principal = [0.3, 0.2, 0.1, 1.0]     # Tom quente para o ambiente
+    cor_diffusa_principal = [1.0, 0.6, 0.2, 1.0]        # Forte para simular o sol poente
+    cor_especular_principal = [1.0, 0.6, 0.2, 1.0]
+    # Luz direcional vinda do lado esquerdo (-X) e de cima
+    posicao_luz_principal = [-50.0, 50.0, 0.0, 0.0]      # w = 0: luz direcional
+    glLightfv(GL_LIGHT0, GL_AMBIENT, cor_ambiente_principal)
+    glLightfv(GL_LIGHT0, GL_DIFFUSE, cor_diffusa_principal)
+    glLightfv(GL_LIGHT0, GL_SPECULAR, cor_especular_principal)
+    glLightfv(GL_LIGHT0, GL_POSITION, posicao_luz_principal)
+
+    # ---------------------------
+    # Configuração da Luz de Preenchimento (GL_LIGHT1)
+    # ---------------------------
+    glEnable(GL_LIGHT1)
+    # Luz de preenchimento com intensidade menor para clarear as áreas em sombra
+    cor_ambiente_preenchimento = [0.4, 0.3, 0.2, 1.0]
+    cor_diffusa_preenchimento = [0.6, 0.4, 0.3, 1.0]
+    cor_especular_preenchimento = [0.6, 0.4, 0.3, 1.0]
+    # Luz direcional vinda do lado direito (+X) e com uma elevação um pouco menor
+    posicao_luz_preenchimento = [50.0, 30.0, 0.0, 0.0]
+    glLightfv(GL_LIGHT1, GL_AMBIENT, cor_ambiente_preenchimento)
+    glLightfv(GL_LIGHT1, GL_DIFFUSE, cor_diffusa_preenchimento)
+    glLightfv(GL_LIGHT1, GL_SPECULAR, cor_especular_preenchimento)
+    glLightfv(GL_LIGHT1, GL_POSITION, posicao_luz_preenchimento)
+
+    # ---------------------------
+    # Luz Ambiente Global (opcional)
+    # ---------------------------
+    glLightModelfv(GL_LIGHT_MODEL_AMBIENT, [0.2, 0.2, 0.2, 1.0])
+
+    # Configura o ambiente de textura para modulação com a iluminação
+    glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE)
+
+
+def interpolacao_catmull_rom(p0, p1, p2, p3, t):
+    """
+    Realiza a interpolação Catmull-Rom 2D e retorna um ponto (x, z).
+    """
+    t2 = t * t
+    t3 = t2 * t
+    x = 0.5 * ((2 * p1[0]) +
+               (-p0[0] + p2[0]) * t +
+               (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 +
+               (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3)
+    z = 0.5 * ((2 * p1[1]) +
+               (-p0[1] + p2[1]) * t +
+               (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 +
+               (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3)
+    return (x, z)
+
+
+# camera.py
+
+
+import math
+import glfw
+from OpenGL.GL import *
+from OpenGL.GLU import *
+import config
+import glm
+
+class ControladorCamera:
+    MODO_PRIMEIRA_PESSOA = 0
+    MODO_TERCEIRA_PESSOA = 1
+    MODO_ANGULADA_LEFT = 2  # 45° para a esquerda
+    MODO_ANGULADA_RIGHT = 3  # 45° para a direita
+    def __init__(self):
+        # Inicializa no modo terceira pessoa e define a velocidade de transição entre modos.
+        self.modo = ControladorCamera.MODO_TERCEIRA_PESSOA
+        self.velocidade_transicao = 2.0  
+        self.tab_foi_pressionado = False
+
+        # Usamos glm.vec3 para representar os offsets da câmera
+        self.offset_atual = glm.vec3(0.0, 0.0, 0.0)
+        self.alvo_offset_atual = glm.vec3(0.0, 0.0, 0.0)
+        self.offset_desejado = glm.vec3(0.0, 0.0, 0.0)
+        self.alvo_offset_desejado = glm.vec3(0.0, 0.0, 0.0)
+
+        # Variáveis que armazenam a posição e o alvo absolutos da câmera
+        self.posicao_camera = glm.vec3(0.0, 0.0, 0.0)
+        self.alvo_camera = glm.vec3(0.0, 0.0, 0.0)
+
+    def calcular_offsets(self, moto) -> (glm.vec3, glm.vec3):
+        """
+        Calcula os offsets desejados (posição e alvo) com base na direção atual da moto.
+        Utilizamos glm.vec3 para criar vetores 3D e realizamos operações com funções matemáticas do Python.
+        
+        Essa função garante que a câmera acompanhe a moto de acordo com o modo selecionado,
+        melhorando a experiência do usuário no jogo.
+        """
+        d = moto.direcao
+        # Cria o vetor "frente" (direção para frente) utilizando a função trigonométrica
+        frente = glm.vec3(math.sin(d), 0.0, math.cos(d))
+        
+        if self.modo == ControladorCamera.MODO_PRIMEIRA_PESSOA:
+            offset_pos = glm.vec3(0.0, 0.5, 0.0)
+            offset_alvo = glm.vec3(frente.x * 10, 0.5, frente.z * 10)
+        elif self.modo == ControladorCamera.MODO_TERCEIRA_PESSOA:
+            offset_pos = glm.vec3(-config.distancia_camera * math.sin(d),
+                                  config.altura_camera,
+                                  -config.distancia_camera * math.cos(d))
+            offset_alvo = glm.vec3(0.0, 0.0, 0.0)  # a câmera olha para a posição da moto
+        elif self.modo == ControladorCamera.MODO_ANGULADA_LEFT:
+            d_angulo = d + math.radians(45)
+            offset_pos = glm.vec3(-config.distancia_camera * math.sin(d_angulo),
+                                  config.altura_camera,
+                                  -config.distancia_camera * math.cos(d_angulo))
+            offset_alvo = glm.vec3(0.0, 0.0, 0.0)
+        elif self.modo == ControladorCamera.MODO_ANGULADA_RIGHT:
+            d_angulo = d + math.radians(-45)
+            offset_pos = glm.vec3(-config.distancia_camera * math.sin(d_angulo),
+                                  config.altura_camera,
+                                  -config.distancia_camera * math.cos(d_angulo))
+            offset_alvo = glm.vec3(0.0, 0.0, 0.0)
+        else:
+            offset_pos = glm.vec3(0.0, config.altura_camera, 0.0)
+            offset_alvo = glm.vec3(0.0, 0.0, 0.0)
+        return offset_pos, offset_alvo
+
+    def trocar_modo(self):
+        """
+        Alterna para o próximo modo de câmera e imprime no console o modo atual.
+        """
+        self.modo = (self.modo + 1) % 4
+        print("Modo de câmera:", self.modo)
+
+    def atualizar(self, janela, dt, moto):
+        """
+        Atualiza os offsets da câmera com base na entrada do usuário (tecla TAB) e na posição/direção da moto.
+        Realiza a interpolação suave dos offsets utilizando glm.mix.
+        Também atualiza a posição global da câmera para ser utilizada na renderização do skybox.
+        """
+        if glfw.get_key(janela, glfw.KEY_TAB) == glfw.PRESS:
+            if not self.tab_foi_pressionado:
+                self.trocar_modo()
+                self.offset_desejado, self.alvo_offset_desejado = self.calcular_offsets(moto)
+                self.tab_foi_pressionado = True
+        else:
+            self.tab_foi_pressionado = False
+
+        if not self.tab_foi_pressionado:
+            self.offset_desejado, self.alvo_offset_desejado = self.calcular_offsets(moto)
+
+        # Interpola os offsets suavemente
+        self.offset_atual = glm.mix(self.offset_atual, self.offset_desejado, dt * self.velocidade_transicao)
+        self.alvo_offset_atual = glm.mix(self.alvo_offset_atual, self.alvo_offset_desejado, dt * self.velocidade_transicao)
+
+        # Calcula a posição absoluta da câmera (posição da moto + offset)
+        self.posicao_camera = moto.pos + self.offset_atual
+        # Calcula o alvo absoluto (posição da moto + alvo_offset)
+        self.alvo_camera = moto.pos + self.alvo_offset_atual
+        # Atualiza a posição global do skybox (para manter a ilusão de ambiente infinito)
+        config.pos_camera[:] = [self.posicao_camera.x, self.posicao_camera.y, self.posicao_camera.z]
+
+    def aplicar_visualizacao(self):
+        """
+        Aplica a transformação de visualização utilizando gluLookAt com os parâmetros atualizados.
+        Essa função é fundamental para definir a perspectiva da cena e o ponto de vista do jogador.
+        """
+        glLoadIdentity()
+        gluLookAt(self.posicao_camera.x, self.posicao_camera.y, self.posicao_camera.z,
+                  self.alvo_camera.x, self.alvo_camera.y, self.alvo_camera.z,
+                  0, 1, 0)
+        
+
+# connfig.py
+import math
+
+# ============================================================
+# Parâmetros globais do circuito (pista, moto, obstáculos, etc.)
+# ============================================================
+# Tamanho de referência da moto (bounding box)
+tamanho_moto = 1.0
+
+# Skybox
+TAMANHO_SKYBOX = 10.0
+nível_chão = - (TAMANHO_SKYBOX / 2)  # Ex: -5.0
+
+# Pista
+nível_pista = nível_chão + 0.1
+largura_pista = 20  # Largura da pista
+
+# Parâmetros de movimento da moto
+velocidade_moto_inicial = 0.0      # (unidades/segundo)
+direcao_moto_inicial = 0.0         # (radianos)
+velocidade_vertical_inicial = 0.0  # para o pulo
+angulo_inclinacao_inicial = 0.0    # ângulo de banking
+
+aceleracao = 10.0         # aceleração
+desaceleracao = 10.0      # desaceleração
+atrito = 2.0              # atrito
+velocidade_maxima = 20.0   # velocidade máxima
+taxa_rotacao = 1.0        # taxa de rotação (rad/s)
+
+inclinacao_maxima = 5.0         # ângulo máximo de inclinação (graus)
+taxa_alteracao_inclinacao = 60.0 # taxa de variação (graus/s)
+
+# Parâmetros para o salto
+altura_salto = 2 * tamanho_moto
+gravidade = 20.0
+velocidade_salto = math.sqrt(2 * gravidade * altura_salto)
+velocidade_salto_rampa = 5.0   # impulso vertical na rampa
+
+# Câmera (posição relativa à moto)
+distancia_camera = 4.0
+altura_camera = 1.0
+
+# Pontos-chave (waypoints) da pista
+pontos_chave = [
+    (0.0, 0.0),         # A – Início/linha de chegada
+    (137.5, 0.0),       # B – Fim da reta principal
+    (181.5, 16.5),      # F – Início da curva de alta velocidade
+    (165.0, 55.0),      # G – Pico da curva
+    (82.5, 66.0),       # H – Longa curva que aproxima a reta final
+    (0.0, 66.0),        # I
+    (-82.5, 11.0)       # K
+]
+NUM_PONTOS_PISTA = 400
+# Lista que será preenchida com os pontos centrais interpolados da pista
+pontos_centro_pista = []
+
+# Chão (floor)
+EXTENSAO_CHAO = TAMANHO_SKYBOX * 100.0
+
+# Variáveis globais para texturas (serão carregadas posteriormente)
+textura_frente = None
+textura_tras = None
+textura_direita = None
+textura_esquerda = None
+textura_cima = None
+textura_baixo = None
+
+# Lista de texturas para o chão
+lista_texturas_chao = []
+
+# Texturas para pista, rampa e obstáculo
+textura_pista = None
+textura_rampa = None
+textura_obstaculo = None
+
+# Centro do skybox (atualizado com a posição da câmera)
+pos_camera = [0.0, 0.0, 0.0]
+
+# Deslocamento vertical para as rampas (para evitar recortes visuais)
+deslocamento_rampa = 1.0

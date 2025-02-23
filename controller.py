@@ -1,14 +1,32 @@
+# controller.py
+"""
+Este módulo é responsável pelo carregamento e desenho dos modelos 3D,
+além de implementar a física e as interações da moto.
+Utiliza OpenGL para renderização e PyGLM para operações vetoriais.
+"""
+
 from OpenGL.GL import *
 import math
 import glfw
-import config
 import os
 import utils
+import config
+import glm  # PyGLM para manipulação de vetores/matrizes
+import obstaculos
 
 def carregar_mtl(caminho_mtl: str) -> dict:
     """
     Carrega um arquivo .mtl e retorna um dicionário com os materiais.
-    Cada material é um dicionário com chaves: 'Ka', 'Kd', 'Ks', 'Ns', 'd', 'map_Kd' (se disponíveis).
+    
+    Cada material é um dicionário com chaves:
+      - 'Ka': cor ambiente (RGBA),
+      - 'Kd': cor difusa (RGBA),
+      - 'Ks': cor especular (RGBA),
+      - 'Ns': coeficiente de brilho,
+      - 'd': opacidade,
+      - 'map_Kd': caminho para a textura difusa (se houver).
+    
+    A função lê linha a linha e interpreta os parâmetros conforme o padrão MTL.
     """
     materiais = {}
     try:
@@ -24,18 +42,16 @@ def carregar_mtl(caminho_mtl: str) -> dict:
                     material_atual = partes[1]
                     materiais[material_atual] = {}
                 elif chave in ['Ka', 'Kd', 'Ks']:
-                    # Ambient, Diffuse e Specular (adiciona alfa = 1.0)
+                    # Converte os três valores e adiciona alfa igual a 1.0
                     materiais[material_atual][chave] = list(map(float, partes[1:4])) + [1.0]
                 elif chave == 'Ns':
                     materiais[material_atual]['Ns'] = float(partes[1])
                 elif chave == 'd':
                     materiais[material_atual]['d'] = float(partes[1])
                 elif chave == 'Tr':
-                    # Tr é a transparência, usamos 1-d para opacidade
+                    # 'Tr' representa transparência; converte para opacidade (1 - valor)
                     materiais[material_atual]['d'] = 1.0 - float(partes[1])
                 elif chave == 'map_Kd':
-                    # Mapa difuso (textura)
-                    # Assume que o caminho é relativo ao arquivo .mtl
                     materiais[material_atual]['map_Kd'] = partes[1]
     except Exception as e:
         print(f"Erro ao carregar MTL '{caminho_mtl}': {e}")
@@ -43,8 +59,18 @@ def carregar_mtl(caminho_mtl: str) -> dict:
 
 def carregar_objeto(caminho_obj: str) -> dict:
     """
-    Carrega um arquivo .obj e o respectivo .mtl (se houver) e retorna um dicionário contendo
-    vértices, normais, coordenadas de textura, faces (associadas ao material) e uma display list compilada.
+    Carrega um arquivo .obj e, se presente, seu arquivo .mtl associado.
+    
+    Retorna um dicionário contendo:
+      - 'vertices': lista de vértices,
+      - 'normais': lista de normais,
+      - 'texcoords': coordenadas de textura,
+      - 'faces': faces (cada face é uma tupla com os índices e material usado),
+      - 'materiais': dicionário dos materiais,
+      - 'lista': display list compilada para desenho otimizado.
+    
+    O carregamento usa a notação padrão dos arquivos OBJ e compila uma display list
+    para acelerar o desenho em tempo real.
     """
     vertices = []
     normais = []
@@ -65,15 +91,18 @@ def carregar_objeto(caminho_obj: str) -> dict:
                     continue
                 chave = partes[0]
                 if chave == 'v':
+                    # Vértices: coordenadas x, y, z
                     vertices.append(list(map(float, partes[1:])))
                 elif chave == 'vn':
+                    # Normais: vetores de normalização
                     normais.append(list(map(float, partes[1:])))
                 elif chave == 'vt':
+                    # Coordenadas de textura: u, v (opcionalmente w)
                     texcoords.append(list(map(float, partes[1:])))
                 elif chave == 'f':
+                    # Faces: cada face pode conter índices para vértice/texcoord/normal
                     face = []
                     for parte in partes[1:]:
-                        # Pode vir no formato v/vt/vn ou v//vn ou v/vt
                         indices = parte.split('/')
                         vi = int(indices[0]) - 1 if indices[0] else None
                         ti = int(indices[1]) - 1 if len(indices) > 1 and indices[1] != '' else None
@@ -81,7 +110,6 @@ def carregar_objeto(caminho_obj: str) -> dict:
                         face.append((vi, ti, ni))
                     faces.append((face, material_atual))
                 elif chave == 'mtllib':
-                    # Carrega o arquivo de material
                     nome_mtl = partes[1]
                     caminho_mtl = os.path.join(diretorio_obj, nome_mtl)
                     materiais = carregar_mtl(caminho_mtl)
@@ -90,19 +118,17 @@ def carregar_objeto(caminho_obj: str) -> dict:
     except Exception as e:
         print(f"Erro ao carregar o objeto '{caminho_obj}': {e}")
 
-    # Compila a display list para otimização
+    # Compila uma display list para otimizar o desenho
     lista = glGenLists(1)
     glNewList(lista, GL_COMPILE)
     material_corrente = None
-    # Se houver textura carregada para um material, podemos armazená-la para não recarregar a cada face
     texturas_material = {}
     for face, mat in faces:
-        # Se o material mudou, atualiza os parâmetros
+        # Se o material mudar, atualiza os parâmetros de material e textura
         if mat != material_corrente:
             material_corrente = mat
             if material_corrente in materiais:
                 props = materiais[material_corrente]
-                # Configura os parâmetros de material
                 if 'Ka' in props:
                     glMaterialfv(GL_FRONT, GL_AMBIENT, props['Ka'])
                 if 'Kd' in props:
@@ -111,7 +137,6 @@ def carregar_objeto(caminho_obj: str) -> dict:
                     glMaterialfv(GL_FRONT, GL_SPECULAR, props['Ks'])
                 if 'Ns' in props:
                     glMaterialf(GL_FRONT, GL_SHININESS, props['Ns'])
-                # Se houver mapa difuso, carrega a textura (somente uma vez por material)
                 if 'map_Kd' in props:
                     if material_corrente not in texturas_material:
                         caminho_textura = os.path.join(diretorio_obj, props['map_Kd'])
@@ -121,10 +146,8 @@ def carregar_objeto(caminho_obj: str) -> dict:
                 else:
                     glBindTexture(GL_TEXTURE_2D, 0)
             else:
-                # Material padrão
-                glColor3f(1, 1, 1)
                 glBindTexture(GL_TEXTURE_2D, 0)
-        # Desenha a face com triangulação (método fan)
+        # Desenha a face utilizando triangulação em fan (cada face é subdividida em triângulos)
         if len(face) < 3:
             continue
         v0 = face[0]
@@ -151,13 +174,13 @@ def carregar_objeto(caminho_obj: str) -> dict:
 
 def desenhar_objeto_carregado(obj: dict):
     """
-    Desenha o objeto carregado utilizando a display list compilada.
+    Desenha o objeto 3D utilizando a display list compilada.
+    Se a display list não estiver disponível, utiliza o método tradicional (menos performático).
     """
     if 'lista' in obj and obj['lista'] != 0:
         glCallList(obj['lista'])
     else:
-        # Fallback: desenho tradicional (menos performático)
-        for face, mat in obj['faces']:
+        for face, _ in obj['faces']:
             if len(face) < 3:
                 continue
             v0 = face[0]
@@ -172,15 +195,34 @@ def desenhar_objeto_carregado(obj: dict):
                     glVertex3fv(obj['vertices'][vi])
                 glEnd()
 
-def desenhar_moto_model(objeto_moto, x, y, z, direcao, angulo_inclinacao, escala):
+def desenhar_moto_model(objeto_moto, posicao: glm.vec3, direcao, angulo_inclinacao, escala):
     """
-    Desenha o modelo da moto com translação, rotação e escala.
-    Uma rotação adicional de 180° no eixo Y é aplicada para corrigir a orientação.
+    Desenha o modelo da moto aplicando transformações: translação, rotação e escala.
+    
+    Parâmetros:
+      - objeto_moto: objeto carregado (dicionário com display list, vértices, etc.);
+      - posicao (glm.vec3): posição da moto no mundo;
+      - direcao: ângulo (radianos) que define a orientação da moto;
+      - angulo_inclinacao: ângulo de banking (inclinação lateral) em graus;
+      - escala: fator de escala para ajustar o tamanho do modelo.
+    
+    Nota gráfica: Uma rotação extra de 180° no eixo Y é aplicada para corrigir a orientação do modelo.
     """
+    # Define cor e materiais para diminuir a luminosidade do modelo (efeito de sombreamento)
+    glColor3f(0.6, 0.6, 0.6)
+    material_ambient = [0.3, 0.3, 0.3, 1.0]
+    material_diffuse = [0.2, 0.2, 0.2, 1.0]
+    glMaterialfv(GL_FRONT, GL_AMBIENT, material_ambient)
+    glMaterialfv(GL_FRONT, GL_DIFFUSE, material_diffuse)
+
     glPushMatrix()
-    glTranslatef(x, y - 0.5, z)
+    # Translada a moto para sua posição; ajusta a altura (y - 0.5 para alinhamento com o chão)
+    glTranslatef(posicao.x, posicao.y - 0.5, posicao.z)
+    # Aplica rotação conforme a direção (convertida de radianos para graus)
     glRotatef(math.degrees(direcao), 0, 1, 0)
+    # Rotação extra de 180° para corrigir a orientação do modelo
     glRotatef(180, 0, 1, 0)
+    # Aplica inclinação lateral (banking)
     glRotatef(angulo_inclinacao, 0, 0, 1)
     glScalef(escala, escala, escala)
     desenhar_objeto_carregado(objeto_moto)
@@ -188,25 +230,30 @@ def desenhar_moto_model(objeto_moto, x, y, z, direcao, angulo_inclinacao, escala
 
 class Motorcycle:
     """
-    Classe que representa a moto.
-    Gerencia o estado (posição, velocidade, direção, etc.), processa a entrada,
-    atualiza a física e realiza o desenho do modelo.
+    Classe que representa a moto no jogo.
+    Gerencia a posição, velocidade, direção, física (gravidade, pulo) e colisões.
+    Utiliza vetores glm.vec3 para facilitar as operações matemáticas.
     """
     def __init__(self, modelo_path="motorcycle.obj", escala=0.5):
-        self.pos = [0.0, config.nível_pista + (config.tamanho_moto / 2), 0.0]
+        # Define a posição inicial: x, y (altura baseada no nível da pista) e z
+        self.pos = glm.vec3(0.0, config.nível_pista + (config.tamanho_moto / 2), 0.0)
         self.velocidade = config.velocidade_moto_inicial
         self.direcao = config.direcao_moto_inicial
         self.velocidade_vertical = config.velocidade_vertical_inicial
         self.angulo_inclinacao = config.angulo_inclinacao_inicial
+        # Carrega o modelo 3D da moto (arquivo .obj e texturas associadas)
         self.modelo = carregar_objeto(modelo_path)
         if not self.modelo['vertices']:
             print("Falha ao carregar o modelo da moto.")
         self.escala = escala
-        self.rampa_acionada = False  # Para evitar múltiplos impulsos na mesma rampa
+        # Variável para evitar múltiplos impulsos ao passar por uma mesma rampa
+        self.rampa_acionada = False  
 
     def esta_na_pista(self, x, z):
         """
-        Verifica se a moto está dentro dos limites da pista.
+        Verifica se a posição (x, z) está dentro dos limites da pista.
+        Compara a distância mínima entre o ponto e os pontos centrais da pista
+        com a metade da largura da pista, considerando uma margem baseada no tamanho da moto.
         """
         margem = config.tamanho_moto / 2
         dist_min = float('inf')
@@ -216,12 +263,17 @@ class Motorcycle:
                 dist_min = dist
         return dist_min <= ((config.largura_pista / 2) - margem)
 
-    def update(self, window, dt, lista_obstaculos, lista_rampas):
+    def update(self, window, dt, lista_obstaculos, lista_rampas, lista_objetos_pedra):
         """
-        Atualiza o estado da moto com base na entrada do usuário, aplica física,
-        detecção de colisões e interações com rampas.
+        Atualiza o estado da moto:
+          - Processa entradas do teclado para acelerar, desacelerar e virar.
+          - Aplica física horizontal e vertical (gravidade e pulo).
+          - Verifica colisões com os limites da pista, obstáculos e pedras.
+          - Trata a interação com rampas, permitindo um impulso vertical se apropriado.
+        
+        dt: delta de tempo desde a última atualização (para suavizar a física).
         """
-        # Processa entrada
+        # Processamento das entradas de movimento
         entrada_frente = 0.0
         entrada_virar = 0.0
         if glfw.get_key(window, glfw.KEY_UP) == glfw.PRESS:
@@ -233,17 +285,18 @@ class Motorcycle:
         if glfw.get_key(window, glfw.KEY_RIGHT) == glfw.PRESS:
             entrada_virar -= 1.0
 
-        # Lógica de pulo
+        # Lógica de pulo: se o espaço for pressionado e a moto estiver no chão, aplica impulso vertical
         if glfw.get_key(window, glfw.KEY_SPACE) == glfw.PRESS:
-            if (self.pos[1] <= config.nível_pista + (config.tamanho_moto / 2) + 0.001) and (self.velocidade_vertical == 0.0):
+            if (self.pos.y <= config.nível_pista + (config.tamanho_moto / 2) + 0.001) and (self.velocidade_vertical == 0.0):
                 self.velocidade_vertical = config.velocidade_salto
 
-        # Atualiza velocidade horizontal
+        # Atualiza a velocidade horizontal conforme a entrada
         if entrada_frente > 0:
             self.velocidade += config.aceleracao * dt
         elif entrada_frente < 0:
             self.velocidade -= config.desaceleracao * dt
         else:
+            # Aplica atrito para reduzir a velocidade se nenhuma tecla for pressionada
             if self.velocidade > 0:
                 self.velocidade -= config.atrito * dt
                 if self.velocidade < 0:
@@ -253,10 +306,12 @@ class Motorcycle:
                 if self.velocidade > 0:
                     self.velocidade = 0
 
+        # Limita a velocidade máxima permitida
         self.velocidade = max(-config.velocidade_maxima/2, min(self.velocidade, config.velocidade_maxima))
+        # Atualiza a direção da moto com base na taxa de rotação e na entrada de virar
         self.direcao += config.taxa_rotacao * entrada_virar * dt
 
-        # Atualiza o ângulo de inclinação (banking)
+        # Atualiza o ângulo de inclinação (banking) para efeito visual nas curvas
         alvo_inclinacao = config.inclinacao_maxima * entrada_virar
         if self.angulo_inclinacao < alvo_inclinacao:
             self.angulo_inclinacao += config.taxa_alteracao_inclinacao * dt
@@ -267,60 +322,75 @@ class Motorcycle:
             if self.angulo_inclinacao < alvo_inclinacao:
                 self.angulo_inclinacao = alvo_inclinacao
 
-        # Atualiza a posição horizontal
+        # Atualiza a posição horizontal (no plano XZ) utilizando funções trigonométricas
         dx = self.velocidade * math.sin(self.direcao) * dt
         dz = self.velocidade * math.cos(self.direcao) * dt
-        pos_anterior_x = self.pos[0]
-        pos_anterior_z = self.pos[2]
-        self.pos[0] += dx
-        self.pos[2] += dz
+        pos_anterior = glm.vec3(self.pos)  # Cópia para rollback em caso de colisão
+        self.pos.x += dx
+        self.pos.z += dz
 
-        # Verifica se permanece na pista
-        if not self.esta_na_pista(self.pos[0], self.pos[2]):
-            self.pos[0] = pos_anterior_x
-            self.pos[2] = pos_anterior_z
+        # Verifica se a moto permanece dentro da pista
+        if not self.esta_na_pista(self.pos.x, self.pos.z):
+            self.pos.x = pos_anterior.x
+            self.pos.z = pos_anterior.z
             self.velocidade = 0
 
-        # Verifica colisão com obstáculos
-        from obstaculos import verificar_colisao_horizontal_obstaculo
-        if verificar_colisao_horizontal_obstaculo(self.pos, config.tamanho_moto, lista_obstaculos) is not None:
-            self.pos[0] = pos_anterior_x
-            self.pos[2] = pos_anterior_z
+        # Verifica colisões horizontais com obstáculos (blocos) usando bounding box
+        if obstaculos.verificar_colisao_horizontal_obstaculo(list(self.pos), config.tamanho_moto, lista_obstaculos) is not None:
+            self.pos.x = pos_anterior.x
+            self.pos.z = pos_anterior.z
             self.velocidade = 0
+            
+        # Verifica colisão com pedras (obstáculos que a moto pode pular ou ficar sobre)
+        colisao_objeto = obstaculos.verificar_colisao_pedra(list(self.pos), config.tamanho_moto, lista_objetos_pedra)
+        if colisao_objeto is not None:
+            # Calcula a altura do obstáculo (pedra), considerando que ela repousa no chão
+            altura_obstaculo = config.nível_chão + colisao_objeto['tamanho']
+            # Base da moto: posição y menos metade do tamanho da moto
+            base_moto = self.pos.y - (config.tamanho_moto / 2)
+            # Se a base da moto estiver abaixo do topo da pedra, há colisão
+            # Assim, a moto pode pular por cima ou permanecer em cima da pedra se estiver alta o bastante
+            if base_moto < altura_obstaculo:
+                self.pos.x = pos_anterior.x
+                self.pos.z = pos_anterior.z
+                self.velocidade = 0
 
-        # Física vertical: gravidade e pulo
-        if self.pos[1] > (config.nível_pista + config.tamanho_moto / 2) or self.velocidade_vertical != 0.0:
+        # Física vertical: aplica gravidade se a moto estiver no ar ou pulando
+        if self.pos.y > (config.nível_pista + config.tamanho_moto / 2) or self.velocidade_vertical != 0.0:
             self.velocidade_vertical -= config.gravidade * dt
-            self.pos[1] += self.velocidade_vertical * dt
+            self.pos.y += self.velocidade_vertical * dt
 
-        # Ajusta colisão vertical com obstáculos
+        # Ajusta a posição vertical caso haja colisão com obstáculos (para “pisar” nos blocos)
         for obs in lista_obstaculos:
             meio = config.tamanho_moto / 2
-            if (self.pos[0] + meio > obs['x'] - obs['largura']/2 and
-                self.pos[0] - meio < obs['x'] + obs['largura']/2 and
-                self.pos[2] + meio > obs['z'] - obs['profundidade']/2 and
-                self.pos[2] - meio < obs['z'] + obs['profundidade']/2):
-                if self.pos[1] - meio < obs['altura'] + config.nível_chão:
-                    self.pos[1] = config.nível_chão + obs['altura'] + meio
+            if (self.pos.x + meio > obs['x'] - obs['largura'] / 2 and
+                self.pos.x - meio < obs['x'] + obs['largura'] / 2 and
+                self.pos.z + meio > obs['z'] - obs['profundidade'] / 2 and
+                self.pos.z - meio < obs['z'] + obs['profundidade'] / 2):
+                if self.pos.y - meio < obs['altura'] + config.nível_chão:
+                    self.pos.y = config.nível_chão + obs['altura'] + meio
                     self.velocidade_vertical = 0.0
 
-        # Processa interação com rampas
+        # Processa interação com rampas: verifica se a moto está sobre alguma rampa e aplica correção na altura
         sobre_alguma_rampa = False
         for rampa in lista_rampas:
             theta = rampa['orientacao']
-            dx_r = self.pos[0] - rampa['x']
-            dz_r = self.pos[2] - rampa['z']
-            # Converte para coordenadas locais da rampa (u: avanço, v: lateral)
+            dx_r = self.pos.x - rampa['x']
+            dz_r = self.pos.z - rampa['z']
+            # Converte para coordenadas locais da rampa:
+            #   u: direção de avanço (longitudinal)
+            #   v: direção lateral
             u = dx_r * math.cos(theta) + dz_r * math.sin(theta)
             v = -dx_r * math.sin(theta) + dz_r * math.cos(theta)
-            if -rampa['profundidade']/2 <= u <= rampa['profundidade']/2 and abs(v) <= (config.largura_pista/2):
+            if -rampa['profundidade'] / 2 <= u <= rampa['profundidade'] / 2 and abs(v) <= (config.largura_pista / 2):
                 sobre_alguma_rampa = True
+                # Função que calcula a altura da rampa em um ponto (u, v)
                 def altura_atual_rampa(u_val, v_val):
-                    return rampa['altura_maxima'] * (1 - (2*u_val/rampa['profundidade'])**2) * (1 - (2*v_val/config.largura_pista)**2)
+                    return rampa['altura_maxima'] * (1 - (2 * u_val / rampa['profundidade']) ** 2) * (1 - (2 * v_val / config.largura_pista) ** 2)
                 alt_rampa = altura_atual_rampa(u, v) - config.deslocamento_rampa
                 meio_moto = config.tamanho_moto / 2
-                if self.pos[1] - meio_moto < (config.nível_chão + alt_rampa):
-                    self.pos[1] = config.nível_chão + alt_rampa + meio_moto
+                if self.pos.y - meio_moto < (config.nível_chão + alt_rampa):
+                    self.pos.y = config.nível_chão + alt_rampa + meio_moto
                     self.velocidade_vertical = 0.0
                 # Impulso vertical se estiver centralizado lateralmente e na parte final da rampa (apenas uma vez)
                 if abs(v) < (config.largura_pista * 0.1) and u > (0.3 * rampa['profundidade']) and self.velocidade > 0 and self.velocidade_vertical == 0 and not self.rampa_acionada:
@@ -329,14 +399,14 @@ class Motorcycle:
         if not sobre_alguma_rampa:
             self.rampa_acionada = False
 
-        # Impede que a moto fique abaixo do nível da pista
-        if self.pos[1] < (config.nível_pista + config.tamanho_moto / 2):
-            self.pos[1] = config.nível_pista + config.tamanho_moto / 2
+        # Garante que a moto não fique abaixo do nível da pista (chão)
+        if self.pos.y < (config.nível_pista + config.tamanho_moto / 2):
+            self.pos.y = config.nível_pista + config.tamanho_moto / 2
             self.velocidade_vertical = 0.0
 
     def draw(self):
         """
         Desenha a moto na posição e orientação atuais.
+        Chama a função 'desenhar_moto_model' passando os parâmetros necessários.
         """
-        desenhar_moto_model(self.modelo, self.pos[0], self.pos[1], self.pos[2],
-                             self.direcao, self.angulo_inclinacao, self.escala)
+        desenhar_moto_model(self.modelo, self.pos, self.direcao, self.angulo_inclinacao, self.escala)

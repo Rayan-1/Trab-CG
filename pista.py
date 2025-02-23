@@ -1,3 +1,9 @@
+# pista.py
+"""
+Este módulo é responsável por carregar as texturas e desenhar a pista e o chão.
+Utiliza funções de interpolação (Catmull-Rom) para gerar os pontos centrais do circuito.
+"""
+
 from OpenGL.GL import *
 import math
 import utils
@@ -5,7 +11,8 @@ import config
 
 def carregar_texturas_chao():
     """
-    Carrega as texturas para o chão a partir de arquivos de imagem.
+    Carrega as texturas do chão a partir de arquivos de imagem.
+    As texturas são armazenadas em config.lista_texturas_chao para uso posterior.
     """
     arquivos = ["assets/floor01.jpg", "assets/floor02.jpg"]
     for arq in arquivos:
@@ -17,14 +24,18 @@ def carregar_texturas_chao():
 
 def carregar_textura_pista():
     """
-    Carrega a textura para a pista.
+    Carrega a textura utilizada para desenhar a pista.
     """
     config.textura_pista = utils.carregar_textura("assets/obstaculo.jpg")
 
 def gerar_pontos_pista(num_pontos):
     """
-    Gera pontos interpolados ao longo da pista usando os pontos-chave.
-    Atualiza a lista config.pontos_centro_pista.
+    Gera pontos interpolados ao longo do percurso da pista.
+    
+    Utiliza a interpolação Catmull-Rom para gerar um conjunto de pontos (pontos_centro_pista)
+    que definem o centro da pista, base para o desenho e para a física do jogo.
+    
+    num_pontos: número total de pontos a serem gerados.
     """
     pts = []
     pontos = config.pontos_chave
@@ -32,6 +43,7 @@ def gerar_pontos_pista(num_pontos):
     segmentos = n  
     amostras_por_segmento = num_pontos // segmentos
     for i in range(segmentos):
+        # Seleciona pontos anteriores e posteriores para a interpolação
         p0 = pontos[(i - 1) % n]
         p1 = pontos[i]
         p2 = pontos[(i + 1) % n]
@@ -39,12 +51,15 @@ def gerar_pontos_pista(num_pontos):
         for j in range(amostras_por_segmento):
             t = j / amostras_por_segmento
             pts.append(utils.interpolacao_catmull_rom(p0, p1, p2, p3, t))
-    pts.append(pts[0])
+    pts.append(pts[0])  # Fecha o loop da pista
     config.pontos_centro_pista[:] = pts
 
 def desenhar_chao():
     """
-    Desenha o chão como uma malha (grid) texturizada que se estende por EXTENSAO_CHAO.
+    Desenha o chão como uma malha texturizada (grid) que se estende por EXTENSAO_CHAO.
+    
+    Utiliza uma projeção ortográfica para o desenho 2D do grid e aplica blending para
+    misturar as texturas do chão.
     """
     glPushMatrix()
     pos_y = config.nível_chão
@@ -84,9 +99,12 @@ def desenhar_chao():
 
 def desenhar_pista():
     """
-    Desenha a pista utilizando um quad strip com a textura e iluminação apropriadas.
+    Desenha a pista utilizando um quad strip.
+    
+    Calcula as bordas internas e externas da pista com base nos pontos centrais e na largura definida,
+    aplicando texturas com mapeamento proporcional para criar o efeito visual da pista.
     """
-    # Configura material da pista
+    # Configura propriedades de material para a pista
     material_ambiente = [0.2, 0.2, 0.2, 1.0]
     material_diffuso  = [1.0, 1.0, 1.0, 1.0]
     material_especular = [0.1, 0.1, 0.1, 1.0]
@@ -115,6 +133,7 @@ def desenhar_pista():
             nz = dx / comprimento
         else:
             nx, nz = 0, 0
+        # Calcula as bordas externa e interna da pista (deslocadas do centro pela metade da largura)
         x_externo = cx + (config.largura_pista / 2) * nx
         z_externo = cz + (config.largura_pista / 2) * nz
         x_interno = cx - (config.largura_pista / 2) * nx

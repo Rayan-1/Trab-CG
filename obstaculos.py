@@ -1,13 +1,50 @@
+# obstaculos.py
+"""
+Este módulo gerencia os obstáculos do jogo.
+Contém funções para desenhar blocos (obstáculos), rampas e objetos 3D (pedras),
+além de funções para verificação de colisões (tanto horizontal quanto com pedras).
+
+Nota: Funções de geração de obstáculos que não são utilizadas foram removidas.
+"""
+
 from OpenGL.GL import *
 import math
 import random
 import config
-import utils
+import controller
+import glm
+
+def desenhar_lista_objetos_pedra(modelo: dict, objeto: dict):
+    """
+    Desenha o objeto 3D representando uma pedra, usando o modelo carregado.
+    
+    Parâmetros:
+      - modelo: dicionário com os dados do objeto 3D (vértices, display list, etc.);
+      - objeto: dicionário com as chaves 'x', 'z' (posição no plano) e 'tamanho' (fator de escala).
+    
+    A pedra é desenhada repousando no chão (nível da pista) e sem rotação extra.
+    """
+    x = objeto['x']
+    z = objeto['z']
+    fator_escala = objeto['tamanho']
+    y = config.nível_pista  # assume que a pedra repousa sobre o chão
+    posicao = glm.vec3(x, y, z)
+    
+    glPushMatrix()
+    glTranslatef(posicao.x, posicao.y, posicao.z)
+    glScalef(fator_escala, fator_escala, fator_escala)
+    # Se necessário, pode ser aplicada uma rotação para corrigir a orientação do modelo
+    controller.desenhar_objeto_carregado(modelo)
+    glPopMatrix()
 
 def verificar_colisao_horizontal_obstaculo(pos_objeto, tamanho, lista_obstaculos):
     """
-    Verifica colisões horizontais (x, z) do objeto com os obstáculos.
-    Retorna o obstáculo em colisão (se houver) ou None.
+    Verifica colisões horizontais (no plano XZ) entre o objeto e obstáculos do tipo bloco.
+    
+    pos_objeto: lista [x, y, z] representando a posição do objeto.
+    tamanho: tamanho de referência do objeto (usado para definir o bounding box).
+    
+    Retorna o obstáculo com o qual há colisão ou None.
     """
     meio = tamanho / 2
     c_minx = pos_objeto[0] - meio
@@ -21,16 +58,53 @@ def verificar_colisao_horizontal_obstaculo(pos_objeto, tamanho, lista_obstaculos
         o_maxz = obs['z'] + obs['profundidade'] / 2
         if ((c_minx < o_maxx) and (c_maxx > o_minx) and
             (c_minz < o_maxz) and (c_maxz > o_minz)):
+            # Verifica também se a altura do objeto colide com o obstáculo
             if pos_objeto[1] - meio < obs['altura'] + config.nível_chão:
                 return obs
+    return None
+
+def verificar_colisao_pedra(pos_objeto, tamanho_moto, lista_objetos_pedra):
+    """
+    Verifica colisão horizontal (plano XZ) entre a moto e as pedras.
+    
+    A colisão é calculada usando bounding boxes quadrados centrados na posição do objeto.
+    
+    Parâmetros:
+      - pos_objeto: [x, y, z] posição da moto.
+      - tamanho_moto: tamanho de referência da moto.
+      - lista_objetos_pedra: lista de dicionários com 'x', 'z' e 'tamanho' para cada pedra.
+      
+    Retorna o objeto em colisão ou None.
+    """
+    meio_moto = tamanho_moto / 2.0
+    moto_min_x = pos_objeto[0] - meio_moto
+    moto_max_x = pos_objeto[0] + meio_moto
+    moto_min_z = pos_objeto[2] - meio_moto
+    moto_max_z = pos_objeto[2] + meio_moto
+
+    for objeto in lista_objetos_pedra:
+        meio_objeto = objeto['tamanho'] / 2.0
+        objeto_min_x = objeto['x'] - meio_objeto
+        objeto_max_x = objeto['x'] + meio_objeto
+        objeto_min_z = objeto['z'] - meio_objeto
+        objeto_max_z = objeto['z'] + meio_objeto
+        if (moto_min_x < objeto_max_x and moto_max_x > objeto_min_x and
+            moto_min_z < objeto_max_z and moto_max_z > objeto_min_z):
+            return objeto
     return None
 
 def desenhar_obstaculo(obstaculo):
     """
     Desenha um obstáculo (bloco) com material e textura.
     A base do obstáculo é posicionada em config.nível_chão.
+    
+    Parâmetros do obstáculo (dicionário):
+      - 'x', 'z': posição central;
+      - 'largura', 'profundidade': dimensões do bloco;
+      - 'altura': altura do bloco.
     """
     glPushMatrix()
+    # Define propriedades de material para o obstáculo
     material_ambiente = [0.2, 0.2, 0.2, 1.0]
     material_diffuso  = [1.0, 1.0, 1.0, 1.0]
     material_especular = [0.3, 0.3, 0.3, 1.0]
@@ -40,9 +114,8 @@ def desenhar_obstaculo(obstaculo):
     glMaterialfv(GL_FRONT, GL_SPECULAR, material_especular)
     glMaterialfv(GL_FRONT, GL_SHININESS, brilho)
     
+    # Liga a textura configurada para obstáculos
     glBindTexture(GL_TEXTURE_2D, config.textura_obstaculo)
-    glColor3f(1.0, 1.0, 1.0)
-    
     x = obstaculo['x']
     z = obstaculo['z']
     largura = obstaculo['largura']
@@ -50,6 +123,7 @@ def desenhar_obstaculo(obstaculo):
     altura = obstaculo['altura']
     meio_largura = largura / 2
     meio_profundidade = profundidade / 2
+    # Calcula a posição vertical para centralizar o bloco (em y)
     y_centro = config.nível_chão + (altura / 2)
     
     glTranslatef(x, y_centro, z)
@@ -87,80 +161,6 @@ def desenhar_obstaculo(obstaculo):
     glEnd()
     glPopMatrix()
 
-def gerar_obstaculos():
-    """
-    Gera uma lista de obstáculos (blocos) posicionados aleatoriamente na pista,
-    garantindo um espaçamento mínimo entre eles.
-    """
-    obstaculos = []
-    n = len(config.pontos_centro_pista)
-    min_intervalo = n // (10 * 2)
-    indices_escolhidos = []
-    tentativas = 0
-    while len(indices_escolhidos) < 10 and tentativas < 1000:
-        idx = random.randint(0, n - 2)
-        if all(min(abs(idx - outro), n - abs(idx - outro)) >= min_intervalo for outro in indices_escolhidos):
-            indices_escolhidos.append(idx)
-        tentativas += 1
-    for idx in indices_escolhidos:
-        cx, cz = config.pontos_centro_pista[idx]
-        pt_anterior = config.pontos_centro_pista[idx - 1]
-        pt_proximo = config.pontos_centro_pista[(idx + 1) % n]
-        dx = pt_proximo[0] - pt_anterior[0]
-        dz = pt_proximo[1] - pt_anterior[1]
-        comprimento = math.hypot(dx, dz)
-        if comprimento != 0:
-            nx = -dz / comprimento
-            nz = dx / comprimento
-        else:
-            nx, nz = 0, 0
-        max_offset = (config.largura_pista / 2) - (config.tamanho_moto * 2 / 2) - 1.0
-        offset = random.uniform(0.5, max_offset)
-        if random.choice([True, False]):
-            offset = -offset
-        ox = cx + offset * nx
-        oz = cz + offset * nz
-        altura_obs = random.uniform(config.tamanho_moto, config.tamanho_moto * 4.0)
-        obstaculos.append({
-            'x': ox,
-            'z': oz,
-            'largura': config.tamanho_moto * 2.0,
-            'profundidade': config.tamanho_moto * 2.0,
-            'altura': altura_obs
-        })
-    return obstaculos
-
-def gerar_rampas():
-    """
-    Gera uma lista de rampas posicionadas aleatoriamente na pista.
-    Cada rampa é definida a partir de um ponto central e orientação dada pela tangente.
-    """
-    rampas = []
-    n = len(config.pontos_centro_pista)
-    min_intervalo = n // (12 * 2)
-    indices_escolhidos = []
-    tentativas = 0
-    while len(indices_escolhidos) < 12 and tentativas < 1000:
-        idx = random.randint(0, n - 2)
-        if all(min(abs(idx - outro), n - abs(idx - outro)) >= min_intervalo for outro in indices_escolhidos):
-            indices_escolhidos.append(idx)
-        tentativas += 1
-    for idx in indices_escolhidos:
-        cx, cz = config.pontos_centro_pista[idx]
-        pt_anterior = config.pontos_centro_pista[idx - 1]
-        pt_proximo = config.pontos_centro_pista[(idx + 1) % n]
-        dx = pt_proximo[0] - pt_anterior[0]
-        dz = pt_proximo[1] - pt_anterior[1]
-        theta = math.atan2(dx, dz)  # orientação da rampa
-        variacao = random.uniform(-0.2, 0.2)
-        rampas.append({
-            'x': cx,
-            'z': cz,
-            'profundidade': 20.0,
-            'altura_maxima': 3.5,
-            'orientacao': theta + variacao
-        })
-    return rampas
 
 def desenhar_rampa(rampa):
     """
@@ -204,7 +204,6 @@ def desenhar_rampa(rampa):
     glMaterialfv(GL_FRONT, GL_SHININESS, brilho)
     
     glBindTexture(GL_TEXTURE_2D, config.textura_rampa)
-    glColor3f(1.0, 1.0, 1.0)
     
     # Desenha o topo da rampa (malha de quads)
     for i in range(subdivisoes_u):
